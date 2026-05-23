@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}My Life – Home{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="hero-label">dashboard</div>
+  <h1 class="hero-title">My Life,<br/><em>Organised.</em></h1>
+  <p class="hero-sub">Track what you build and what you love.</p>
+</section>
+<div class="home-grid">
+  <a href="/investments" class="home-card">
+    <div class="hc-icon">◈</div>
+    <div class="hc-body">
+      <h2>Investments</h2>
+      <p>Portfolio overview, stocks across exchanges, other assets.</p>
+    </div>
+    <div class="hc-arrow">→</div>
+  </a>
+  <a href="/subscriptions" class="home-card">
+    <div class="hc-icon">✦</div>
+    <div class="hc-body">
+      <h2>Subscriptions</h2>
+      <p>Classes, memberships, streaming — track by sessions or duration.</p>
+    </div>
+    <div class="hc-arrow">→</div>
+  </a>
+</div>
+{% endblock %}

@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Subscriptions{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-label">module 02</div>
+  <h1 class="page-title">Subscriptions</h1>
+</div>
+
+<!-- Expiry alert banner -->
+<div id="expiry-banner" style="display:none" class="expiry-banner"></div>
+
+<!-- Monthly spend summary -->
+<div id="monthly-summary" class="monthly-summary" style="display:none"></div>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.8rem">
+  <p style="color:var(--text2);font-size:.9rem">Track any recurring activity — by sessions or by time period.</p>
+  <button class="btn btn-primary" onclick="openNewSubModal()">+ New Subscription</button>
+</div>
+
+<div id="sub-cards" class="sub-cards-grid"><p class="empty-msg">No subscriptions yet.</p></div>
+
+<!-- New subscription modal -->
+<div class="modal-overlay" id="new-sub-modal" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title">New Subscription</div>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="field field-wide"><label>Name</label><input type="text" id="ns-name" placeholder="Salsa Classes, Netflix, Gym…"/></div>
+      <div class="field"><label>Category</label><select id="ns-category">{% for cat in categories %}<option value="{{ cat }}">{{ cat }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Tracking Type</label><select id="ns-type" onchange="toggleSubTypeHint()"><option value="classes">By sessions / classes</option><option value="duration">By duration / period</option></select></div>
+      <div class="field field-wide"><p id="sub-type-hint" style="font-size:.78rem;color:var(--text2);margin-top:-.3rem">Track individual sessions with attendance dots.</p></div>
+      <div class="field field-wide"><label>Note</label><input type="text" id="ns-note" placeholder="Optional…"/></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('new-sub-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createSubscription()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit subscription modal -->
+<div class="modal-overlay" id="edit-sub-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">Edit Subscription</div>
+    <input type="hidden" id="esub-id"/>
+    <div class="field" style="margin-bottom:.9rem"><label>Name</label><input type="text" id="esub-name"/></div>
+    <div class="field" style="margin-bottom:.9rem"><label>Category</label><select id="esub-category">{% for cat in categories %}<option value="{{ cat }}">{{ cat }}</option>{% endfor %}</select></div>
+    <div class="field"><label>Note</label><input type="text" id="esub-note"/></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('edit-sub-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSubEdit()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Classes payment modal -->
+<div class="modal-overlay" id="pay-classes-modal" style="display:none">
+  <div class="modal"><div class="modal-title" id="pay-classes-title">Record Payment</div>
+    <input type="hidden" id="pc-sub-id"/>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Amount Paid (KES)</label><input type="number" id="pc-amount" placeholder="0.00"/></div>
+      <div class="field"><label>Sessions Purchased</label><input type="number" id="pc-classes" placeholder="4" min="1"/></div>
+      <div class="field"><label>Date</label><input type="date" id="pc-date"/></div>
+      <div class="field"><label>Note</label><input type="text" id="pc-note" placeholder="Optional"/></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('pay-classes-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveClassPayment()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Duration payment modal -->
+<div class="modal-overlay" id="pay-duration-modal" style="display:none">
+  <div class="modal"><div class="modal-title" id="pay-duration-title">Record Payment</div>
+    <input type="hidden" id="pd-sub-id"/>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Amount (KES)</label><input type="number" id="pd-amount" placeholder="0.00"/></div>
+      <div class="field"><label>Payment Date</label><input type="date" id="pd-date"/></div>
+      <div class="field"><label>Period Start</label><input type="date" id="pd-start"/></div>
+      <div class="field"><label>Period End</label><input type="date" id="pd-end"/></div>
+      <div class="field field-wide"><label>Note</label><input type="text" id="pd-note" placeholder="e.g. Annual plan"/></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('pay-duration-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveDurationPayment()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mark attend modal -->
+<div class="modal-overlay" id="attend-modal" style="display:none">
+  <div class="modal"><div class="modal-title">Mark Session Attended</div>
+    <input type="hidden" id="m-class-id"/>
+    <div class="field" style="margin-bottom:.8rem"><label>Date Attended</label><input type="date" id="m-date"/></div>
+    <div class="field"><label>Note</label><input type="text" id="m-note" placeholder="e.g. Salsa level 2"/></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('attend-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmSubAttend()">Mark Attended</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const _td2 = new Date().toISOString().split("T")[0];
+  document.getElementById("pc-date").value = _td2;
+  document.getElementById("pd-date").value = _td2;
+  document.getElementById("pd-start").value = _td2;
+  document.getElementById("m-date").value = _td2;
+  const _endDate = new Date(); _endDate.setMonth(_endDate.getMonth()+1);
+  document.getElementById("pd-end").value = _endDate.toISOString().split("T")[0];
+  loadSubscriptions();
+  loadExpiryAlerts();
+  loadMonthlySpend();
+</script>
+{% endblock %}
