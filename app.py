@@ -1,4 +1,6 @@
 import os
+import sys
+import traceback
 from flask import Flask, render_template, redirect, url_for
 from flask_login import current_user
 from db import init_db, get_db
@@ -18,18 +20,35 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(inv_bp)
 app.register_blueprint(sub_bp)
 
-# Init DB + seed tickers
-init_db()
-conn = get_db()
+# ── Initialise database with explicit error logging ──────────────────────────
+print(">>> Starting database initialisation...", flush=True)
+print(f">>> DATABASE_URL set: {bool(os.environ.get('DATABASE_URL'))}", flush=True)
+
 try:
-    seed_tickers(conn)
-finally:
-    conn.close()
+    init_db()
+    print(">>> init_db() completed successfully", flush=True)
+except Exception as e:
+    print(f">>> init_db() FAILED: {type(e).__name__}: {e}", flush=True)
+    traceback.print_exc()
+    raise
 
-SUB_CATEGORIES = ["Dance","Gym","Music","Language","Sports",
-                  "Streaming","Software","Education","Health","Other"]
+# Seed ticker database
+try:
+    conn = get_db()
+    try:
+        seed_tickers(conn)
+        print(">>> Tickers seeded successfully", flush=True)
+    finally:
+        conn.close()
+except Exception as e:
+    print(f">>> Ticker seeding FAILED: {type(e).__name__}: {e}", flush=True)
+    traceback.print_exc()
+    # Don't crash — app can still run without tickers
 
-# ── Pages (all require approved login) ───────────────────────────────────────
+SUB_CATEGORIES = ["Dance", "Gym", "Music", "Language", "Sports",
+                  "Streaming", "Software", "Education", "Health", "Other"]
+
+# ── Pages ────────────────────────────────────────────────────────────────────
 from flask import Blueprint
 main_bp = Blueprint("main", __name__)
 
