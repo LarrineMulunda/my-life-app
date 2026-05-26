@@ -13,13 +13,18 @@
   <nav class="nav">
     <a href="/" class="nav-brand">✦ my life</a>
     <div class="nav-links">
-      <a href="/investments" class="nav-link {% if request.path == '/investments' %}active{% endif %}">investments</a>
-      <a href="/subscriptions" class="nav-link {% if request.path == '/subscriptions' %}active{% endif %}">subscriptions</a>
+      <a href="/investments"   class="nav-link {% if request.path=='/investments' %}active{% endif %}">investments</a>
+      <a href="/subscriptions" class="nav-link {% if request.path=='/subscriptions' %}active{% endif %}">subscriptions</a>
+    </div>
+    <div class="nav-user">
+      <span class="nav-name">{{ current_user.name }}</span>
+      {% if current_user.is_admin %}
+      <a href="/admin" class="nav-admin-link">admin</a>
+      {% endif %}
+      <a href="/logout" class="nav-logout">sign out</a>
     </div>
   </nav>
-  <main class="main">
-    {% block content %}{% endblock %}
-  </main>
+  <main class="main">{% block content %}{% endblock %}</main>
   <div id="toast"></div>
   <script src="/static/js/app.js"></script>
   {% block scripts %}{% endblock %}

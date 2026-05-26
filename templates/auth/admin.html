@@ -1,0 +1,92 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Admin Panel — My Life</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,400&family=DM+Mono:wght@300;400&family=Outfit:wght@300;400;500&display.swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/static/css/style.css"/>
+<style>
+.admin-wrap{max-width:760px;margin:0 auto;padding:2.5rem 1.5rem}
+.admin-title{font-family:var(--font-serif);font-size:2.2rem;font-weight:300;margin-bottom:.3rem}
+.admin-sub{color:var(--text2);font-size:.88rem;margin-bottom:2rem}
+.section-hdr{font-family:var(--font-mono);font-size:.65rem;letter-spacing:.16em;text-transform:uppercase;color:var(--gold);margin:1.8rem 0 .9rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)}
+.user-row{display:flex;align-items:center;gap:1rem;padding:.85rem 1.2rem;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:.6rem}
+.user-info{flex:1}
+.user-name{font-size:.9rem;color:var(--text);font-weight:400}
+.user-email{font-family:var(--font-mono);font-size:.72rem;color:var(--text2)}
+.user-date{font-family:var(--font-mono);font-size:.65rem;color:var(--text3)}
+.role-badge{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.08em;padding:.14rem .45rem;border-radius:4px;flex-shrink:0}
+.role-pending{background:rgba(201,168,76,.12);color:var(--gold);border:1px solid rgba(201,168,76,.25)}
+.role-user{background:rgba(92,158,106,.1);color:var(--green);border:1px solid rgba(92,158,106,.25)}
+.role-admin{background:rgba(91,135,181,.12);color:var(--blue);border:1px solid rgba(91,135,181,.25)}
+.action-btns{display:flex;gap:.5rem;flex-shrink:0}
+.btn-approve{background:var(--green);color:#fff;border:none;border-radius:6px;padding:.35rem .85rem;font-size:.76rem;cursor:pointer;font-family:var(--font-body)}
+.btn-reject{background:transparent;color:var(--red);border:1px solid rgba(192,86,78,.35);border-radius:6px;padding:.35rem .85rem;font-size:.76rem;cursor:pointer}
+.btn-promote{background:transparent;color:var(--blue);border:1px solid rgba(91,135,181,.35);border-radius:6px;padding:.32rem .8rem;font-size:.72rem;cursor:pointer}
+.btn-demote{background:transparent;color:var(--text3);border:1px solid var(--border2);border-radius:6px;padding:.32rem .8rem;font-size:.72rem;cursor:pointer}
+.empty-state{color:var(--text3);font-size:.86rem;font-style:italic;padding:1.2rem;text-align:center;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)}
+.flash{background:rgba(92,158,106,.1);border:1px solid rgba(92,158,106,.3);border-radius:var(--radius);padding:.6rem 1rem;font-size:.84rem;color:var(--green);margin-bottom:1rem}
+.back-link{font-size:.82rem;color:var(--text2);text-decoration:none;display:inline-flex;align-items:center;gap:.4rem;margin-bottom:1.5rem}
+</style>
+</head>
+<body style="background:var(--bg)">
+<div class="admin-wrap">
+  <a href="/investments" class="back-link">← Back to app</a>
+
+  {% with msgs = get_flashed_messages() %}
+    {% for msg in msgs %}<div class="flash">{{ msg }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="admin-title">Admin Panel</div>
+  <div class="admin-sub">Manage user accounts and access approvals.</div>
+
+  <!-- Pending approvals -->
+  <div class="section-hdr">⏳ Pending Approval ({{ pending|length }})</div>
+  {% if pending %}
+    {% for u in pending %}
+    <div class="user-row">
+      <div class="user-info">
+        <div class="user-name">{{ u.name }}</div>
+        <div class="user-email">{{ u.email }}</div>
+        <div class="user-date">Registered {{ u.created_at[:10] if u.created_at else '—' }}</div>
+      </div>
+      <span class="role-badge role-pending">pending</span>
+      <div class="action-btns">
+        <form method="POST" action="/admin/approve/{{ u.id }}" style="display:inline">
+          <button class="btn-approve" type="submit">✓ Approve</button>
+        </form>
+        <form method="POST" action="/admin/reject/{{ u.id }}" style="display:inline"
+              onsubmit="return confirm('Reject and delete this registration?')">
+          <button class="btn-reject" type="submit">✕ Reject</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty-state">No pending registrations</div>
+  {% endif %}
+
+  <!-- Active users -->
+  <div class="section-hdr">✓ Active Users ({{ approved|length }})</div>
+  {% for u in approved %}
+  <div class="user-row">
+    <div class="user-info">
+      <div class="user-name">{{ u.name }} {% if u.id == current_user.id %}<span style="font-size:.72rem;color:var(--text3)">(you)</span>{% endif %}</div>
+      <div class="user-email">{{ u.email }}</div>
+    </div>
+    <span class="role-badge role-{{ u.role }}">{{ u.role }}</span>
+    {% if u.id != current_user.id %}
+    <div class="action-btns">
+      {% if u.role == 'user' %}
+      <form method="POST" action="/admin/promote/{{ u.id }}" style="display:inline">
+        <button class="btn-promote" type="submit">↑ Make Admin</button>
+      </form>
+      {% else %}
+      <form method="POST" action="/admin/demote/{{ u.id }}" style="display:inline">
+        <button class="btn-demote" type="submit">↓ Remove Admin</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+</body></html>

@@ -915,3 +915,15 @@ input, select, button { font-family: var(--font-body); font-size: .95rem; }
 .lot-detail-row span:last-child {
   font-family: var(--font-mono); font-size: .85rem; color: var(--text);
 }
+
+/* ── Auth nav additions ────────────────────────────────────────────────────── */
+.nav-user   { display:flex; align-items:center; gap:1rem; }
+.nav-name   { font-family:var(--font-mono); font-size:.68rem; color:var(--text2); }
+.nav-admin-link {
+  font-family: var(--font-mono); font-size:.68rem; letter-spacing:.08em;
+  color: var(--gold); border: 1px solid rgba(201,168,76,.3);
+  border-radius: 4px; padding: .15rem .5rem; transition: background .2s;
+}
+.nav-admin-link:hover { background: rgba(201,168,76,.1); }
+.nav-logout { font-size:.75rem; color:var(--text3); transition:color .2s; }
+.nav-logout:hover { color:var(--red); }

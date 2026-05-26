@@ -1,0 +1,44 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Create Account — My Life</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,400&family=DM+Mono:wght@300;400&family=Outfit:wght@300;400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/static/css/style.css"/>
+<style>
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg)}
+.auth-wrap{width:100%;max-width:420px;padding:2rem 1rem}
+.auth-brand{font-family:var(--font-serif);font-style:italic;color:var(--gold);font-size:1.5rem;text-align:center;margin-bottom:2rem;display:block;text-decoration:none}
+.auth-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:2.2rem 2rem}
+.auth-title{font-family:var(--font-serif);font-size:1.8rem;font-weight:300;margin-bottom:.3rem}
+.auth-sub{color:var(--text2);font-size:.85rem;margin-bottom:1.6rem}
+.auth-field{display:flex;flex-direction:column;gap:.35rem;margin-bottom:1rem}
+.auth-field label{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text2)}
+.auth-field input{background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:.65rem .9rem;color:var(--text);font-size:.95rem;font-family:var(--font-body);outline:none;transition:border-color .2s}
+.auth-field input:focus{border-color:var(--gold)}
+.auth-btn{width:100%;padding:.7rem;background:var(--gold);color:var(--bg);border:none;border-radius:var(--radius);font-size:.95rem;font-family:var(--font-body);font-weight:500;cursor:pointer;margin-bottom:1.2rem}
+.auth-btn:hover{background:var(--gold2)}
+.auth-link{text-align:center;font-size:.84rem;color:var(--text2)}
+.auth-link a{color:var(--gold)}
+.flash{background:rgba(192,86,78,.12);border:1px solid rgba(192,86,78,.3);border-radius:var(--radius);padding:.65rem 1rem;font-size:.84rem;color:var(--red);margin-bottom:1.1rem}
+.flash.ok{background:rgba(92,158,106,.1);border-color:rgba(92,158,106,.3);color:var(--green)}
+.remember{display:flex;align-items:center;gap:.5rem;font-size:.82rem;color:var(--text2);margin-bottom:1.2rem;cursor:pointer}
+</style>
+</head><body>
+<div class="auth-wrap">
+  <a href="/" class="auth-brand">✦ my life</a>
+  <div class="auth-card">
+    <div class="auth-title">Create account</div>
+    <div class="auth-sub">Request access to your personal tracker</div>
+    {% with msgs = get_flashed_messages() %}
+      {% for msg in msgs %}<div class="flash">{{ msg }}</div>{% endfor %}
+    {% endwith %}
+    <form method="POST">
+      <div class="auth-field"><label>Full Name</label><input type="text" name="name" required autofocus placeholder="Your Name"/></div>
+      <div class="auth-field"><label>Email</label><input type="email" name="email" required placeholder="you@email.com"/></div>
+      <div class="auth-field"><label>Password</label><input type="password" name="password" required placeholder="Min 8 characters"/></div>
+      <div class="auth-field"><label>Confirm Password</label><input type="password" name="password2" required placeholder="Repeat password"/></div>
+      <button class="auth-btn" type="submit" style="margin-top:.5rem">Request Access</button>
+    </form>
+    <div class="auth-link">Already have an account? <a href="/login">Sign in</a></div>
+  </div>
+</div>
+</body></html>

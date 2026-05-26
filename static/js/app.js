@@ -284,7 +284,8 @@ async function addLot() {
   const price    = document.getElementById("lot-price").value;
   const date     = document.getElementById("lot-date").value;
   const broker   = document.getElementById("lot-broker").value.trim();
-  const d = await api("POST","/api/stocks/lot",{ticker,exchange,shares,purchase_price:price,date,broker});
+  const currency = document.getElementById("lot-currency")?.value || "KES";
+  const d = await api("POST","/api/stocks/lot",{ticker,exchange,shares,purchase_price:price,currency,date,broker});
   if (d.ok) {
     toast(`${shares} × ${ticker} @ ${price} added ✓`);
     ["lot-ticker","lot-shares","lot-price","lot-broker"].forEach(id=>document.getElementById(id).value="");
@@ -366,8 +367,20 @@ async function fetchPricesAI() {
 // ── Settings ───────────────────────────────────────────────────────────────
 async function loadKeyStatus() {
   const d = await api("GET","/api/config");
-  const el = document.getElementById("key-status");
-  if (el) el.textContent = d.gemini_key_set ? `✓ Key saved (${d.gemini_key_masked})` : "No key saved yet.";
+  const el  = document.getElementById("key-status");
+  const smNote = document.getElementById("sm-note");
+  const manualForm = document.getElementById("manual-key-form");
+  if (d.using_secret_manager) {
+    if (smNote) smNote.style.display = "block";
+    if (manualForm) manualForm.style.display = "none";
+    if (el) el.textContent = "";
+  } else {
+    if (smNote) smNote.style.display = "none";
+    if (manualForm) manualForm.style.display = "block";
+    if (el) el.textContent = d.gemini_key_set
+      ? `✓ Key saved (${d.gemini_key_masked})`
+      : "No key saved yet — enter your Gemini API key below.";
+  }
 }
 async function saveGeminiKey() {
   const key = document.getElementById("gemini-key-input")?.value.trim();
@@ -392,13 +405,13 @@ async function searchTickers(prefix) {
   _tickerSearchTimeout = setTimeout(async () => {
     // Get exchange filter if available
     const exchEl = document.getElementById(`${prefix}-exchange`);
-    const exch   = exchEl ? `&exchange=${exchEl.value}` : "";
+    const exch   = (exchEl && exchEl.value) ? `&exchange=${exchEl.value}` : "";
     const d = await api("GET", `/api/tickers?q=${encodeURIComponent(q)}${exch}&limit=8`);
     const tickers = d.tickers || [];
     if (!tickers.length) { sugEl.style.display = "none"; return; }
 
     sugEl.innerHTML = tickers.map(t => `
-      <div class="ticker-suggestion" onmousedown="selectTicker('${prefix}', '${t.symbol}', '${t.exchange}', '${t.name}')">
+      <div class="ticker-suggestion" onmousedown="selectTicker('${prefix}', '${t.symbol}', '${t.exchange}', '${t.name}', '${t.currency}')">
         <span class="ts-symbol">${t.symbol}</span>
         <span class="ts-type ${t.type}">${t.type}</span>
         <span class="ts-name">${t.name}</span>
@@ -408,12 +421,14 @@ async function searchTickers(prefix) {
   }, 200);
 }
 
-function selectTicker(prefix, symbol, exchange, name) {
+function selectTicker(prefix, symbol, exchange, name, currency) {
   const input  = document.getElementById(`${prefix}-ticker`);
   const exchEl = document.getElementById(`${prefix}-exchange`);
   const sugEl  = document.getElementById(`${prefix}-ticker-suggestions`);
   if (input)  input.value  = symbol;
   if (exchEl) exchEl.value = exchange;
+  const curEl = document.getElementById(`${prefix}-currency`);
+  if (curEl && currency) curEl.value = currency;
   if (sugEl)  sugEl.style.display = "none";
 }
 
@@ -577,7 +592,8 @@ async function addSaving() {
   const type =document.getElementById("s-type").value;
   const date =document.getElementById("s-date").value;
   const note =document.getElementById("s-note").value.trim();
-  const d = await api("POST","/api/savings",{label,asset_class:cls,amount:amt,type,date,note});
+  const currency = document.getElementById("s-currency")?.value || "KES";
+  const d = await api("POST","/api/savings",{label,asset_class:cls,amount:amt,type,currency,date,note});
   if (d.ok) {
     toast("Entry added ✓");
     document.getElementById("s-label").value="";

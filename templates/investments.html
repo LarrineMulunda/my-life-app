@@ -90,6 +90,12 @@
       <div class="field"><label>Shares</label><input type="number" id="lot-shares" placeholder="100" step="any" min="0.001"/></div>
       <div class="field"><label>Purchase Price per Share</label><input type="number" id="lot-price" placeholder="17.50" step="any" min="0.001"/></div>
       <div class="field"><label>Date</label><input type="date" id="lot-date"/></div>
+      <div class="field">
+        <label>Currency</label>
+        <select id="lot-currency">
+          {% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}
+        </select>
+      </div>
       <div class="field"><label>Broker</label><input type="text" id="lot-broker" placeholder="Genghis, AIB-AXYS…"/></div>
     </div>
     <button class="btn btn-primary" onclick="addLot()">Add Purchase</button>
@@ -214,6 +220,12 @@
       <div class="field"><label>Asset Class</label><select id="s-class">{% for ac in asset_classes %}<option value="{{ ac }}">{{ ac }}</option>{% endfor %}</select></div>
       <div class="field"><label>Amount (KES)</label><input type="number" id="s-amount" placeholder="0.00" min="0"/></div>
       <div class="field"><label>Type</label><select id="s-type"><option value="deposit">Deposit ↑</option><option value="withdrawal">Withdrawal ↓</option></select></div>
+      <div class="field">
+        <label>Currency</label>
+        <select id="s-currency">
+          {% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}
+        </select>
+      </div>
       <div class="field"><label>Date</label><input type="date" id="s-date"/></div>
       <div class="field field-wide"><label>Note</label><input type="text" id="s-note" placeholder="Optional…"/></div>
     </div>
@@ -245,10 +257,15 @@
 <div class="tab-pane" id="tab-settings">
   <div class="panel" style="margin-top:1.5rem;max-width:520px">
     <div class="panel-title">Gemini API Key</div>
-    <p class="panel-hint">Used for price fetching and Friday reviews. Stored locally in the app database.</p>
-    <div class="field" style="margin-bottom:1rem"><label>API Key</label><input type="password" id="gemini-key-input" placeholder="AIza…" autocomplete="off"/></div>
+    <p class="panel-hint">Used for AI price fetching and Friday reviews.</p>
     <div id="key-status" style="font-size:.82rem;color:var(--text2);margin-bottom:1rem"></div>
-    <button class="btn btn-primary" onclick="saveGeminiKey()">Save Key</button>
+    <div id="sm-note" style="display:none;font-size:.8rem;color:var(--green);background:rgba(92,158,106,.08);border:1px solid rgba(92,158,106,.2);border-radius:8px;padding:.6rem .9rem;margin-bottom:1rem">
+      ✓ Using GCP Secret Manager — key is stored securely in the cloud. To update, use the GCP Console or gcloud CLI.
+    </div>
+    <div id="manual-key-form">
+      <div class="field" style="margin-bottom:1rem"><label>API Key</label><input type="password" id="gemini-key-input" placeholder="AIza…" autocomplete="off"/></div>
+      <button class="btn btn-primary" onclick="saveGeminiKey()">Save Key</button>
+    </div>
   </div>
 </div>
 

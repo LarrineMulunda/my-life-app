@@ -1,9 +1,12 @@
-"""Investment routes — PostgreSQL/SQLite dual, lot-based selling, ticker search."""
+"""Investment routes — per-user data, lot-based selling, ticker search, currency support."""
 import csv, io, json
 from datetime import datetime
 from flask import Blueprint, request, jsonify, Response
+from flask_login import login_required, current_user
 from db import get_db, cfg_get, cfg_set, ph, is_pg, upsert_snapshot_sql
 from services.gemini import fetch_prices, generate_review
+from services.secrets import get_gemini_key, save_gemini_key_to_secret
+from routes.auth import approved_required
 
 bp = Blueprint("investments", __name__)
 
@@ -14,8 +17,8 @@ EXCUR         = {"NSE":"KES","NYSE":"USD","NASDAQ":"USD","LSE":"GBP",
                  "JSE":"ZAR","EURONEXT":"EUR","HKEX":"HKD","Other":"—"}
 
 def _today():   return datetime.today().strftime("%Y-%m-%d")
-def p():        return ph()   # shorthand
-def _row(r):    return dict(r) if r else None
+def p():        return ph()
+def uid():      return current_user.id
 
 def _require(d, *keys):
     missing = [k for k in keys if not d.get(k) and d.get(k) != 0]
@@ -42,6 +45,8 @@ def _fetchone(conn, sql, params=()):
 # ── Tickers API ───────────────────────────────────────────────────────────────
 
 @bp.route("/api/tickers")
+
+@approved_required
 def get_tickers():
     q        = request.args.get("q","").strip().upper()
     exchange = request.args.get("exchange","").strip().upper()
@@ -79,10 +84,12 @@ def get_tickers():
 # ── Savings ───────────────────────────────────────────────────────────────────
 
 @bp.route("/api/savings")
+
+@approved_required
 def get_savings():
     conn = get_db()
     try:
-        rows = _fetchall(conn, "SELECT * FROM savings ORDER BY date DESC")
+        rows = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC", (uid(),))
     finally:
         conn.close()
     totals, net = {}, 0
@@ -93,6 +100,8 @@ def get_savings():
     return jsonify({"entries": rows, "totals_by_class": totals, "net_total": net})
 
 @bp.route("/api/savings", methods=["POST"])
+
+@approved_required
 def add_saving():
     d = request.json or {}
     try:
@@ -103,14 +112,16 @@ def add_saving():
         return jsonify({"error": str(e)}), 400
     conn = get_db()
     try:
-        _exec(conn, f"INSERT INTO savings (label,asset_class,amount,type,note,date) VALUES ({p()},{p()},{p()},{p()},{p()},{p()})",
-              (d["label"],d["asset_class"],float(d["amount"]),d["type"],d.get("note",""),d["date"]))
+        _exec(conn, f"INSERT INTO savings (user_id,label,asset_class,amount,type,currency,note,date) VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})",
+              (uid(),d["label"],d["asset_class"],float(d["amount"]),d["type"],d.get("currency","KES"),d.get("note",""),d["date"]))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/savings/<int:sid>", methods=["PUT"])
+
+@approved_required
 def edit_saving(sid):
     d = request.json or {}
     try:
@@ -127,6 +138,8 @@ def edit_saving(sid):
     return jsonify({"ok": True})
 
 @bp.route("/api/savings/<int:sid>", methods=["DELETE"])
+
+@approved_required
 def delete_saving(sid):
     conn = get_db()
     try:
@@ -139,10 +152,11 @@ def delete_saving(sid):
 # ── Portfolio helper ──────────────────────────────────────────────────────────
 
 def _build_portfolio(conn):
-    lots   = _fetchall(conn, "SELECT * FROM stock_lots WHERE shares > 0 ORDER BY date DESC")
-    all_lots = _fetchall(conn, "SELECT * FROM stock_lots ORDER BY date DESC")  # incl. fully sold
-    prices = _fetchall(conn, "SELECT * FROM stock_prices ORDER BY date DESC")
-    sales  = _fetchall(conn, "SELECT * FROM stock_sales ORDER BY date DESC")
+    u = uid()
+    lots   = _fetchall(conn, f"SELECT * FROM stock_lots WHERE user_id={ph()} AND shares > 0 ORDER BY date DESC", (u,))
+    all_lots = _fetchall(conn, f"SELECT * FROM stock_lots WHERE user_id={ph()} ORDER BY date DESC", (u,))
+    prices = _fetchall(conn, f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC", (u,))
+    sales  = _fetchall(conn, f"SELECT * FROM stock_sales WHERE user_id={ph()} ORDER BY date DESC", (u,))
 
     latest_price, price_hist = {}, {}
     for p_ in prices:
@@ -200,7 +214,7 @@ def _build_portfolio(conn):
         "lots":           all_lots,   # all lots for table display
         "active_lots":    lots,       # lots with remaining shares
         "sales":          sales,
-        "price_history":  _fetchall(conn, "SELECT * FROM stock_prices ORDER BY date DESC"),
+        "price_history":  _fetchall(conn, f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC", (u,)),
         "total_cost":     round(total_cost,2),
         "total_market":   round(total_mkt,2),
         "total_gain":     round(gain,2),
@@ -211,6 +225,8 @@ def _build_portfolio(conn):
 # ── Stocks ─────────────────────────────────────────────────────────────────────
 
 @bp.route("/api/stocks")
+
+@approved_required
 def get_stocks():
     conn = get_db()
     try:
@@ -219,18 +235,20 @@ def get_stocks():
         conn.close()
 
 @bp.route("/api/stocks/lots")
+
+@approved_required
 def get_lots_for_sale():
     """Return active lots (shares > 0) for the sell-from-lot dropdown."""
     conn = get_db()
     try:
-        rows = _fetchall(conn, """
+        rows = _fetchall(conn, f"""
             SELECT id, ticker, exchange, shares, original_shares,
-                   purchase_price, date, broker,
+                   purchase_price, currency, date, broker,
                    shares * purchase_price as lot_value
             FROM stock_lots
-            WHERE shares > 0
+            WHERE shares > 0 AND user_id={p()}
             ORDER BY ticker, date
-        """)
+        """, (uid(),))
     finally:
         conn.close()
     for r in rows:
@@ -241,6 +259,8 @@ def get_lots_for_sale():
     return jsonify({"lots": rows})
 
 @bp.route("/api/stocks/lot", methods=["POST"])
+
+@approved_required
 def add_lot():
     d = request.json or {}
     try:
@@ -255,17 +275,20 @@ def add_lot():
     try:
         _exec(conn, f"""
             INSERT INTO stock_lots
-                (ticker,exchange,shares,original_shares,purchase_price,date,broker,note)
-            VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
-        """, (d["ticker"].upper().strip(), d["exchange"],
-              shares, shares,  # shares = original_shares on first insert
-              price, d["date"], d.get("broker",""), d.get("note","")))
+                (user_id,ticker,exchange,shares,original_shares,purchase_price,currency,date,broker,note)
+            VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
+        """, (uid(), d["ticker"].upper().strip(), d["exchange"],
+              shares, shares,
+              price, d.get("currency", EXCUR.get(d.get("exchange","NSE"),"KES")),
+              d["date"], d.get("broker",""), d.get("note","")))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/lot/<int:lid>", methods=["PUT"])
+
+@approved_required
 def edit_lot(lid):
     d = request.json or {}
     try:
@@ -288,6 +311,8 @@ def edit_lot(lid):
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/lot/<int:lid>", methods=["DELETE"])
+
+@approved_required
 def delete_lot(lid):
     conn = get_db()
     try:
@@ -298,6 +323,8 @@ def delete_lot(lid):
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/price", methods=["POST"])
+
+@approved_required
 def add_price():
     d = request.json or {}
     try:
@@ -308,15 +335,18 @@ def add_price():
         return jsonify({"error": str(e)}), 400
     conn = get_db()
     try:
-        _exec(conn, f"INSERT INTO stock_prices (ticker,exchange,price,date,note) VALUES ({p()},{p()},{p()},{p()},{p()})",
-              (d["ticker"].upper().strip(), d["exchange"],
-               float(d["price"]), d["date"], d.get("note","")))
+        _exec(conn, f"INSERT INTO stock_prices (user_id,ticker,exchange,price,currency,date,note) VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()})",
+              (uid(), d["ticker"].upper().strip(), d["exchange"],
+               float(d["price"]), d.get("currency", EXCUR.get(d.get("exchange","NSE"),"KES")),
+               d["date"], d.get("note","")))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/price/<int:pid>", methods=["DELETE"])
+
+@approved_required
 def delete_price(pid):
     conn = get_db()
     try:
@@ -329,6 +359,8 @@ def delete_price(pid):
 # ── Sales — lot-based ─────────────────────────────────────────────────────────
 
 @bp.route("/api/stocks/sale", methods=["POST"])
+
+@approved_required
 def record_sale():
     """
     Sell from a specific lot:
@@ -365,11 +397,12 @@ def record_sale():
         # Record the sale
         _exec(conn, f"""
             INSERT INTO stock_sales
-                (lot_id,ticker,exchange,shares,purchase_price,sale_price,date,broker,note)
-            VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
-        """, (lot["id"], lot["ticker"], lot["exchange"],
+                (user_id,lot_id,ticker,exchange,shares,purchase_price,sale_price,currency,date,broker,note)
+            VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
+        """, (uid(), lot["id"], lot["ticker"], lot["exchange"],
               shares_to_sell, float(lot["purchase_price"]),
-              sale_price, d["date"],
+              sale_price, lot.get("currency", EXCUR.get(lot.get("exchange","NSE"),"KES")),
+              d["date"],
               d.get("broker", lot.get("broker","")),
               d.get("note","")))
 
@@ -394,6 +427,8 @@ def record_sale():
         conn.close()
 
 @bp.route("/api/stocks/sale/<int:sid>", methods=["DELETE"])
+
+@approved_required
 def delete_sale(sid):
     """Delete a sale and restore shares to the source lot."""
     conn = get_db()
@@ -416,11 +451,13 @@ def delete_sale(sid):
 # ── Gemini price fetch ────────────────────────────────────────────────────────
 
 @bp.route("/api/stocks/fetch-prices", methods=["POST"])
+
+@approved_required
 def fetch_prices_ai():
     d = request.json or {}
-    api_key = d.get("api_key") or cfg_get("gemini_api_key")
+    api_key = d.get("api_key") or get_gemini_key(uid())
     if d.get("api_key"):
-        cfg_set("gemini_api_key", d["api_key"])
+        cfg_set(uid(), "gemini_api_key", d["api_key"])
     if not api_key:
         return jsonify({"error": "No Gemini API key — add it in Settings"}), 400
 
@@ -461,7 +498,7 @@ def _save_snapshot():
     conn = get_db()
     try:
         port  = _build_portfolio(conn)
-        rows  = _fetchall(conn, "SELECT * FROM savings")
+        rows  = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
         other = sum(float(r["amount"]) if r["type"]=="deposit" else -float(r["amount"]) for r in rows)
         stock = port["total_market"]
         total = stock + other
@@ -474,6 +511,8 @@ def _save_snapshot():
         conn.close()
 
 @bp.route("/api/portfolio/snapshot", methods=["POST"])
+
+@approved_required
 def manual_snapshot():
     try:
         _save_snapshot()
@@ -482,10 +521,12 @@ def manual_snapshot():
         return jsonify({"error": str(e)}), 500
 
 @bp.route("/api/portfolio/snapshots")
+
+@approved_required
 def get_snapshots():
     conn = get_db()
     try:
-        rows = _fetchall(conn, "SELECT * FROM portfolio_snapshots ORDER BY date ASC")
+        rows = _fetchall(conn, f"SELECT * FROM portfolio_snapshots WHERE user_id={ph()} ORDER BY date ASC", (uid(),))
     finally:
         conn.close()
     for r in rows:
@@ -495,11 +536,13 @@ def get_snapshots():
 # ── Investment overview ───────────────────────────────────────────────────────
 
 @bp.route("/api/investments/overview")
+
+@approved_required
 def investment_overview():
     conn = get_db()
     try:
         port     = _build_portfolio(conn)
-        sav_rows = _fetchall(conn, "SELECT * FROM savings")
+        sav_rows = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
     finally:
         conn.close()
 
@@ -547,8 +590,10 @@ def investment_overview():
 # ── Portfolio review ──────────────────────────────────────────────────────────
 
 @bp.route("/api/portfolio/review", methods=["POST"])
+
+@approved_required
 def gen_review():
-    api_key = cfg_get("gemini_api_key")
+    api_key = get_gemini_key(uid())
     if not api_key:
         return jsonify({"error": "No Gemini API key — add it in Settings"}), 400
     conn = get_db()
@@ -563,12 +608,14 @@ def gen_review():
         review = generate_review(api_key, port, sav)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    cfg_set("last_review", json.dumps({"date": _today(), **review}))
+    cfg_set(uid(), "last_review", json.dumps({"date": _today(), **review}))
     return jsonify({"ok": True, "review": review})
 
 @bp.route("/api/portfolio/review")
+
+@approved_required
 def get_review():
-    raw = cfg_get("last_review")
+    raw = cfg_get(uid(), "last_review")
     if not raw:
         return jsonify({"review": None})
     try:
@@ -577,21 +624,31 @@ def get_review():
         return jsonify({"review": None})
 
 @bp.route("/api/config")
+@approved_required
 def get_config():
-    key    = cfg_get("gemini_api_key","")
+    import os
+    using_secret_mgr = bool(os.environ.get("GEMINI_SECRET_NAME"))
+    key = get_gemini_key(uid()) or ""
     masked = ("*"*max(0,len(key)-4)+key[-4:]) if len(key)>4 else "*"*len(key)
-    return jsonify({"gemini_key_set": bool(key), "gemini_key_masked": masked})
+    return jsonify({"gemini_key_set": bool(key), "gemini_key_masked": masked,
+                    "using_secret_manager": using_secret_mgr})
 
 @bp.route("/api/config", methods=["POST"])
+@approved_required
 def set_config():
     d = request.json or {}
-    if d.get("gemini_api_key"):
-        cfg_set("gemini_api_key", d["gemini_api_key"])
+    key = d.get("gemini_api_key","").strip()
+    if key:
+        saved_to_sm = save_gemini_key_to_secret(key)
+        if not saved_to_sm:
+            cfg_set(uid(), "gemini_api_key", key)
     return jsonify({"ok": True})
 
 # ── CSV exports ───────────────────────────────────────────────────────────────
 
 @bp.route("/api/export/lots.csv")
+
+@approved_required
 def export_lots():
     conn = get_db()
     try:
@@ -609,10 +666,12 @@ def export_lots():
                     headers={"Content-Disposition":"attachment;filename=stock_lots.csv"})
 
 @bp.route("/api/export/savings.csv")
+
+@approved_required
 def export_savings():
     conn = get_db()
     try:
-        rows = _fetchall(conn, "SELECT * FROM savings ORDER BY date DESC")
+        rows = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC", (uid(),))
     finally:
         conn.close()
     out = io.StringIO()
@@ -624,6 +683,8 @@ def export_savings():
                     headers={"Content-Disposition":"attachment;filename=savings.csv"})
 
 @bp.route("/api/export/sales.csv")
+
+@approved_required
 def export_sales():
     conn = get_db()
     try:
