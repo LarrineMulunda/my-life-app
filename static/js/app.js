@@ -376,43 +376,171 @@ async function saveGeminiKey() {
   if (d.ok) { toast("Gemini key saved ✓"); document.getElementById("gemini-key-input").value=""; loadKeyStatus(); }
 }
 
-// ── Realized gains ─────────────────────────────────────────────────────────
+// ── Ticker search ──────────────────────────────────────────────────────────
+let _tickerSearchTimeout = null;
+let _activeLots = [];
+
+async function searchTickers(prefix) {
+  const input = document.getElementById(`${prefix}-ticker`);
+  const sugEl = document.getElementById(`${prefix}-ticker-suggestions`);
+  if (!input || !sugEl) return;
+
+  const q = input.value.trim();
+  if (q.length < 1) { sugEl.style.display = "none"; return; }
+
+  clearTimeout(_tickerSearchTimeout);
+  _tickerSearchTimeout = setTimeout(async () => {
+    // Get exchange filter if available
+    const exchEl = document.getElementById(`${prefix}-exchange`);
+    const exch   = exchEl ? `&exchange=${exchEl.value}` : "";
+    const d = await api("GET", `/api/tickers?q=${encodeURIComponent(q)}${exch}&limit=8`);
+    const tickers = d.tickers || [];
+    if (!tickers.length) { sugEl.style.display = "none"; return; }
+
+    sugEl.innerHTML = tickers.map(t => `
+      <div class="ticker-suggestion" onmousedown="selectTicker('${prefix}', '${t.symbol}', '${t.exchange}', '${t.name}')">
+        <span class="ts-symbol">${t.symbol}</span>
+        <span class="ts-type ${t.type}">${t.type}</span>
+        <span class="ts-name">${t.name}</span>
+        <span class="ts-exch">${t.exchange}</span>
+      </div>`).join("");
+    sugEl.style.display = "block";
+  }, 200);
+}
+
+function selectTicker(prefix, symbol, exchange, name) {
+  const input  = document.getElementById(`${prefix}-ticker`);
+  const exchEl = document.getElementById(`${prefix}-exchange`);
+  const sugEl  = document.getElementById(`${prefix}-ticker-suggestions`);
+  if (input)  input.value  = symbol;
+  if (exchEl) exchEl.value = exchange;
+  if (sugEl)  sugEl.style.display = "none";
+}
+
+function hideSuggestions(prefix) {
+  setTimeout(() => {
+    const el = document.getElementById(`${prefix}-ticker-suggestions`);
+    if (el) el.style.display = "none";
+  }, 200);
+}
+
+// ── Realized gains (lot-based) ──────────────────────────────────────────────
+
+async function loadActiveLots() {
+  const d = await api("GET", "/api/stocks/lots");
+  _activeLots = d.lots || [];
+  const sel = document.getElementById("sale-lot-id");
+  if (!sel) return;
+  sel.innerHTML = "<option value=''>— choose a lot —</option>" +
+    _activeLots.map(l =>
+      `<option value="${l.id}">${l.ticker} (${l.exchange}) · ${l.shares.toLocaleString()} shares @ ${fmtP(l.purchase_price, l.exchange==='NSE'?'KES':l.exchange==='LSE'?'GBP':'USD')} · ${fmtDate(l.date)}</option>`
+    ).join("");
+}
+
+function onLotSelected() {
+  const sel    = document.getElementById("sale-lot-id");
+  const detail = document.getElementById("lot-detail");
+  const lotId  = parseInt(sel.value);
+  const lot    = _activeLots.find(l => l.id === lotId);
+
+  if (!lot) {
+    if (detail) detail.style.display = "none";
+    return;
+  }
+
+  const cur = lot.exchange === "NSE" ? "KES" : lot.exchange === "LSE" ? "GBP" :
+              lot.exchange === "JSE" ? "ZAR" : "USD";
+
+  document.getElementById("ld-ticker").textContent   = lot.ticker;
+  document.getElementById("ld-exchange").textContent  = lot.exchange;
+  document.getElementById("ld-date").textContent      = fmtDate(lot.date);
+  document.getElementById("ld-price").textContent     = `${cur} ${lot.purchase_price.toFixed(2)}`;
+  document.getElementById("ld-shares").textContent    = `${lot.shares.toLocaleString()} shares available`;
+  document.getElementById("ld-orig").textContent      = `${lot.original_shares.toLocaleString()} shares originally`;
+  document.getElementById("ld-value").textContent     = fmt(lot.lot_value, cur);
+  detail.style.display = "flex";
+
+  // Auto-fill purchase price (readonly)
+  document.getElementById("sale-buy-price").value = lot.purchase_price.toFixed(4);
+
+  // Update max shares hint
+  document.getElementById("sale-shares").max = lot.shares;
+  document.getElementById("sale-shares-max").textContent =
+    `Max: ${lot.shares.toLocaleString()} shares`;
+
+  document.getElementById("sale-broker").value = lot.broker || "";
+  updateSalePreview();
+}
+
 function updateSalePreview() {
+  const lotId  = parseInt(document.getElementById("sale-lot-id")?.value);
+  const lot    = _activeLots.find(l => l.id === lotId);
   const shares = parseFloat(document.getElementById("sale-shares")?.value)||0;
   const buyP   = parseFloat(document.getElementById("sale-buy-price")?.value)||0;
   const saleP  = parseFloat(document.getElementById("sale-price")?.value)||0;
   const el     = document.getElementById("sale-preview");
   if (!el) return;
-  if (shares && buyP && saleP) {
-    const gain = (saleP - buyP) * shares;
-    el.textContent = `Preview: ${sign(gain)}${fmt(gain)} gain/loss on this sale`;
-    el.style.color = gain >= 0 ? "var(--green)" : "var(--red)";
-  } else el.textContent = "";
+
+  if (!lot || !shares || !buyP || !saleP) { el.textContent = ""; return; }
+
+  if (shares > lot.shares) {
+    el.textContent = `⚠ Cannot sell ${shares} — only ${lot.shares} available`;
+    el.style.color = "var(--red)";
+    return;
+  }
+
+  const gain = (saleP - buyP) * shares;
+  const cur  = lot.exchange === "NSE" ? "KES" : lot.exchange === "LSE" ? "GBP" :
+               lot.exchange === "JSE" ? "ZAR" : "USD";
+  el.innerHTML =
+    `<span style="color:${gain>=0?"var(--green)":"var(--red)"}">
+       ${sign(gain)}${fmt(gain,cur)} gain/loss
+     </span>
+     &nbsp;&nbsp;
+     <span style="color:var(--text3)">
+       Remaining after sale: ${(lot.shares - shares).toFixed(lot.shares % 1 ? 4 : 0)} shares
+     </span>`;
+  el.style.color = "";
 }
 
 async function recordSale() {
-  const ticker     = document.getElementById("sale-ticker").value.trim().toUpperCase();
-  const exchange   = document.getElementById("sale-exchange").value;
-  const shares     = document.getElementById("sale-shares").value;
-  const buy_price  = document.getElementById("sale-buy-price").value;
-  const sale_price = document.getElementById("sale-price").value;
-  const date       = document.getElementById("sale-date").value;
-  const broker     = document.getElementById("sale-broker").value.trim();
-  const note       = document.getElementById("sale-note").value.trim();
-  const d = await api("POST","/api/stocks/sale",{ticker,exchange,shares,purchase_price:buy_price,sale_price,date,broker,note});
+  const lot_id       = document.getElementById("sale-lot-id").value;
+  const shares       = document.getElementById("sale-shares").value;
+  const sale_price   = document.getElementById("sale-price").value;
+  const date         = document.getElementById("sale-date").value;
+  const broker       = document.getElementById("sale-broker").value.trim();
+  const note         = document.getElementById("sale-note").value.trim();
+
+  if (!lot_id)      return toast("Select a lot to sell from.", "error");
+  if (!shares)      return toast("Enter shares to sell.", "error");
+  if (!sale_price)  return toast("Enter the sale price.", "error");
+
+  const lot = _activeLots.find(l => l.id === parseInt(lot_id));
+  if (lot && parseFloat(shares) > lot.shares) {
+    return toast(`Cannot sell ${shares} — only ${lot.shares} available in this lot.`, "error");
+  }
+
+  const d = await api("POST","/api/stocks/sale",
+    {lot_id: parseInt(lot_id), shares_to_sell: parseFloat(shares), sale_price, date, broker, note});
+
   if (d.ok) {
-    const gain = (parseFloat(sale_price)-parseFloat(buy_price))*parseFloat(shares);
-    toast(`Sale recorded — gain: ${sign(gain)}${fmt(gain)} ✓`);
-    ["sale-ticker","sale-shares","sale-buy-price","sale-price","sale-broker","sale-note"].forEach(id=>document.getElementById(id).value="");
-    document.getElementById("sale-preview").textContent="";
-    loadStocks(); loadOverview();
+    const cur = lot?.exchange === "NSE" ? "KES" : lot?.exchange === "LSE" ? "GBP" : "USD";
+    const msg = d.remaining > 0
+      ? `Sale recorded — ${sign(d.gain_loss)}${fmt(d.gain_loss,cur)} · ${d.remaining} shares remain in lot ✓`
+      : `Sale recorded — ${sign(d.gain_loss)}${fmt(d.gain_loss,cur)} · Lot fully sold ✓`;
+    toast(msg);
+    ["sale-shares","sale-price","sale-broker","sale-note"].forEach(id => document.getElementById(id).value="");
+    document.getElementById("sale-preview").textContent = "";
+    document.getElementById("lot-detail").style.display = "none";
+    document.getElementById("sale-lot-id").value = "";
+    loadStocks(); loadOverview(); loadActiveLots();
   }
 }
 
 async function deleteSale(id) {
-  if (!confirm("Remove this sale?")) return;
+  if (!confirm("Remove this sale? Shares will be restored to the lot.")) return;
   const d = await api("DELETE",`/api/stocks/sale/${id}`);
-  if (d.ok) { toast("Sale removed."); loadStocks(); loadOverview(); }
+  if (d.ok) { toast("Sale removed — shares restored to lot."); loadStocks(); loadOverview(); loadActiveLots(); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

@@ -1,8 +1,9 @@
 import os
 from flask import Flask, render_template
-from db import init_db
+from db import init_db, get_db
 from routes.investments import bp as inv_bp, ASSET_CLASSES, EXCHANGES, EXCUR
 from routes.subscriptions import bp as sub_bp
+from services.tickers import seed_tickers
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-only-change-in-production")
@@ -11,6 +12,13 @@ app.register_blueprint(inv_bp)
 app.register_blueprint(sub_bp)
 
 init_db()
+
+# Seed ticker database on first run
+conn = get_db()
+try:
+    seed_tickers(conn)
+finally:
+    conn.close()
 
 SUB_CATEGORIES = ["Dance","Gym","Music","Language","Sports",
                   "Streaming","Software","Education","Health","Other"]
