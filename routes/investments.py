@@ -1,6 +1,7 @@
 """Investment routes — per-user data, lot-based selling, ticker search, currency support."""
 import csv, io, json
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 from flask import Blueprint, request, jsonify, Response
 from flask_login import login_required, current_user
 from db import get_db, cfg_get, cfg_set, ph, is_pg, upsert_snapshot_sql
@@ -25,6 +26,15 @@ def _require(d, *keys):
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
 
+def _clean(d):
+    """Convert PostgreSQL date/Decimal objects to JSON-safe types."""
+    for k, v in d.items():
+        if isinstance(v, (date, datetime)):
+            d[k] = v.isoformat()[:10]
+        elif isinstance(v, Decimal):
+            d[k] = float(v)
+    return d
+
 def _exec(conn, sql, params=()):
     cur = conn.cursor()
     cur.execute(sql, params)
@@ -33,19 +43,17 @@ def _exec(conn, sql, params=()):
 def _fetchall(conn, sql, params=()):
     cur = conn.cursor()
     cur.execute(sql, params)
-    rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    return [_clean(dict(r)) for r in cur.fetchall()]
 
 def _fetchone(conn, sql, params=()):
     cur = conn.cursor()
     cur.execute(sql, params)
     r = cur.fetchone()
-    return dict(r) if r else None
+    return _clean(dict(r)) if r else None
 
 # ── Tickers API ───────────────────────────────────────────────────────────────
 
 @bp.route("/api/tickers")
-
 @approved_required
 def get_tickers():
     q        = request.args.get("q","").strip().upper()
@@ -84,12 +92,12 @@ def get_tickers():
 # ── Savings ───────────────────────────────────────────────────────────────────
 
 @bp.route("/api/savings")
-
 @approved_required
 def get_savings():
     conn = get_db()
     try:
-        rows = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC", (uid(),))
+        rows = _fetchall(conn,
+            f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC", (uid(),))
     finally:
         conn.close()
     totals, net = {}, 0
@@ -100,7 +108,6 @@ def get_savings():
     return jsonify({"entries": rows, "totals_by_class": totals, "net_total": net})
 
 @bp.route("/api/savings", methods=["POST"])
-
 @approved_required
 def add_saving():
     d = request.json or {}
@@ -112,15 +119,18 @@ def add_saving():
         return jsonify({"error": str(e)}), 400
     conn = get_db()
     try:
-        _exec(conn, f"INSERT INTO savings (user_id,label,asset_class,amount,type,currency,note,date) VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})",
-              (uid(),d["label"],d["asset_class"],float(d["amount"]),d["type"],d.get("currency","KES"),d.get("note",""),d["date"]))
+        _exec(conn,
+            f"""INSERT INTO savings
+                (user_id,label,asset_class,amount,type,currency,note,date)
+                VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+            (uid(), d["label"], d["asset_class"], float(d["amount"]),
+             d["type"], d.get("currency","KES"), d.get("note",""), d["date"]))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/savings/<int:sid>", methods=["PUT"])
-
 @approved_required
 def edit_saving(sid):
     d = request.json or {}
@@ -130,20 +140,23 @@ def edit_saving(sid):
         return jsonify({"error": str(e)}), 400
     conn = get_db()
     try:
-        _exec(conn, f"UPDATE savings SET label={p()},asset_class={p()},amount={p()},type={p()},note={p()},date={p()} WHERE id={p()}",
-              (d["label"],d["asset_class"],float(d["amount"]),d["type"],d.get("note",""),d["date"],sid))
+        _exec(conn,
+            f"""UPDATE savings
+                SET label={p()},asset_class={p()},amount={p()},type={p()},note={p()},date={p()}
+                WHERE id={p()} AND user_id={p()}""",
+            (d["label"], d["asset_class"], float(d["amount"]), d["type"],
+             d.get("note",""), d["date"], sid, uid()))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/savings/<int:sid>", methods=["DELETE"])
-
 @approved_required
 def delete_saving(sid):
     conn = get_db()
     try:
-        _exec(conn, f"DELETE FROM savings WHERE id={p()}", (sid,))
+        _exec(conn, f"DELETE FROM savings WHERE id={p()} AND user_id={p()}", (sid, uid()))
         conn.commit()
     finally:
         conn.close()
@@ -152,11 +165,15 @@ def delete_saving(sid):
 # ── Portfolio helper ──────────────────────────────────────────────────────────
 
 def _build_portfolio(conn):
-    u = uid()
-    lots   = _fetchall(conn, f"SELECT * FROM stock_lots WHERE user_id={ph()} AND shares > 0 ORDER BY date DESC", (u,))
-    all_lots = _fetchall(conn, f"SELECT * FROM stock_lots WHERE user_id={ph()} ORDER BY date DESC", (u,))
-    prices = _fetchall(conn, f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC", (u,))
-    sales  = _fetchall(conn, f"SELECT * FROM stock_sales WHERE user_id={ph()} ORDER BY date DESC", (u,))
+    u      = uid()
+    lots   = _fetchall(conn,
+        f"SELECT * FROM stock_lots WHERE user_id={ph()} AND shares > 0 ORDER BY date DESC", (u,))
+    all_lots = _fetchall(conn,
+        f"SELECT * FROM stock_lots WHERE user_id={ph()} ORDER BY date DESC", (u,))
+    prices = _fetchall(conn,
+        f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC", (u,))
+    sales  = _fetchall(conn,
+        f"SELECT * FROM stock_sales WHERE user_id={ph()} ORDER BY date DESC", (u,))
 
     latest_price, price_hist = {}, {}
     for p_ in prices:
@@ -165,23 +182,24 @@ def _build_portfolio(conn):
             latest_price[k] = p_
     for p_ in reversed(prices):
         k = (p_["ticker"], p_.get("exchange","NSE"))
-        price_hist.setdefault(k, []).append({"date": str(p_["date"]), "price": float(p_["price"])})
+        price_hist.setdefault(k, []).append({
+            "date": str(p_["date"]), "price": float(p_["price"])})
 
     tickers = {}
     for lot in lots:
         exch = lot.get("exchange","NSE")
-        k = (lot["ticker"], exch)
+        k    = (lot["ticker"], exch)
         if k not in tickers:
-            tickers[k] = {"ticker":lot["ticker"],"exchange":exch,
-                          "currency":EXCUR.get(exch,"—"),
-                          "lots":[],"total_shares":0,"total_cost":0}
+            tickers[k] = {"ticker": lot["ticker"], "exchange": exch,
+                          "currency": lot.get("currency") or EXCUR.get(exch,"—"),
+                          "lots": [], "total_shares": 0, "total_cost": 0}
         tickers[k]["lots"].append(lot)
         tickers[k]["total_shares"] += float(lot["shares"])
         tickers[k]["total_cost"]   += float(lot["shares"]) * float(lot["purchase_price"])
 
     realized = {}
     for s in sales:
-        k = (s["ticker"], s.get("exchange","NSE"))
+        k    = (s["ticker"], s.get("exchange","NSE"))
         gain = (float(s["sale_price"]) - float(s["purchase_price"])) * float(s["shares"])
         realized.setdefault(k, {"realized_gain":0,"sold_shares":0,"sales":[]})
         realized[k]["realized_gain"] += gain
@@ -196,8 +214,13 @@ def _build_portfolio(conn):
             mkt  = h["total_shares"] * float(lp["price"])
             gain = mkt - h["total_cost"]
             pct  = round(gain/h["total_cost"]*100,2) if h["total_cost"] else 0
-            h.update({"market_price":float(lp["price"]),"market_value":round(mkt,2),
-                      "gain_loss":round(gain,2),"pct_return":pct,"price_date":str(lp["date"])})
+            h.update({
+                "market_price": float(lp["price"]),
+                "market_value": round(mkt,2),
+                "gain_loss":    round(gain,2),
+                "pct_return":   pct,
+                "price_date":   str(lp["date"])
+            })
             total_mkt += mkt
         else:
             h.update({"market_price":None,"market_value":None,
@@ -211,10 +234,11 @@ def _build_portfolio(conn):
     gain = total_mkt - total_cost
     return {
         "holdings":       holdings,
-        "lots":           all_lots,   # all lots for table display
-        "active_lots":    lots,       # lots with remaining shares
+        "lots":           all_lots,
+        "active_lots":    lots,
         "sales":          sales,
-        "price_history":  _fetchall(conn, f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC", (u,)),
+        "price_history":  _fetchall(conn,
+            f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC", (u,)),
         "total_cost":     round(total_cost,2),
         "total_market":   round(total_mkt,2),
         "total_gain":     round(gain,2),
@@ -222,10 +246,9 @@ def _build_portfolio(conn):
         "portfolio_pct":  round(gain/total_cost*100,2) if total_cost else 0,
     }
 
-# ── Stocks ─────────────────────────────────────────────────────────────────────
+# ── Stocks ────────────────────────────────────────────────────────────────────
 
 @bp.route("/api/stocks")
-
 @approved_required
 def get_stocks():
     conn = get_db()
@@ -235,7 +258,6 @@ def get_stocks():
         conn.close()
 
 @bp.route("/api/stocks/lots")
-
 @approved_required
 def get_lots_for_sale():
     """Return active lots (shares > 0) for the sell-from-lot dropdown."""
@@ -256,10 +278,10 @@ def get_lots_for_sale():
         r["original_shares"] = float(r["original_shares"]) if r["original_shares"] else float(r["shares"])
         r["purchase_price"]  = float(r["purchase_price"])
         r["lot_value"]       = float(r["lot_value"])
+        r["date"]            = str(r["date"])
     return jsonify({"lots": rows})
 
 @bp.route("/api/stocks/lot", methods=["POST"])
-
 @approved_required
 def add_lot():
     d = request.json or {}
@@ -287,7 +309,6 @@ def add_lot():
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/lot/<int:lid>", methods=["PUT"])
-
 @approved_required
 def edit_lot(lid):
     d = request.json or {}
@@ -301,29 +322,27 @@ def edit_lot(lid):
             UPDATE stock_lots
             SET ticker={p()},exchange={p()},shares={p()},purchase_price={p()},
                 date={p()},broker={p()},note={p()}
-            WHERE id={p()}
+            WHERE id={p()} AND user_id={p()}
         """, (d["ticker"].upper().strip(), d["exchange"],
               float(d["shares"]), float(d["purchase_price"]),
-              d["date"], d.get("broker",""), d.get("note",""), lid))
+              d["date"], d.get("broker",""), d.get("note",""), lid, uid()))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/lot/<int:lid>", methods=["DELETE"])
-
 @approved_required
 def delete_lot(lid):
     conn = get_db()
     try:
-        _exec(conn, f"DELETE FROM stock_lots WHERE id={p()}", (lid,))
+        _exec(conn, f"DELETE FROM stock_lots WHERE id={p()} AND user_id={p()}", (lid, uid()))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/price", methods=["POST"])
-
 @approved_required
 def add_price():
     d = request.json or {}
@@ -335,22 +354,25 @@ def add_price():
         return jsonify({"error": str(e)}), 400
     conn = get_db()
     try:
-        _exec(conn, f"INSERT INTO stock_prices (user_id,ticker,exchange,price,currency,date,note) VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()})",
-              (uid(), d["ticker"].upper().strip(), d["exchange"],
-               float(d["price"]), d.get("currency", EXCUR.get(d.get("exchange","NSE"),"KES")),
-               d["date"], d.get("note","")))
+        _exec(conn,
+            f"""INSERT INTO stock_prices
+                (user_id,ticker,exchange,price,currency,date,note)
+                VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+            (uid(), d["ticker"].upper().strip(), d["exchange"],
+             float(d["price"]),
+             d.get("currency", EXCUR.get(d.get("exchange","NSE"),"KES")),
+             d["date"], d.get("note","")))
         conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
 
 @bp.route("/api/stocks/price/<int:pid>", methods=["DELETE"])
-
 @approved_required
 def delete_price(pid):
     conn = get_db()
     try:
-        _exec(conn, f"DELETE FROM stock_prices WHERE id={p()}", (pid,))
+        _exec(conn, f"DELETE FROM stock_prices WHERE id={p()} AND user_id={p()}", (pid, uid()))
         conn.commit()
     finally:
         conn.close()
@@ -359,17 +381,8 @@ def delete_price(pid):
 # ── Sales — lot-based ─────────────────────────────────────────────────────────
 
 @bp.route("/api/stocks/sale", methods=["POST"])
-
 @approved_required
 def record_sale():
-    """
-    Sell from a specific lot:
-    - lot_id required
-    - shares_to_sell must not exceed lot.shares
-    - purchase_price auto-filled from lot
-    - lot.shares reduced by shares_to_sell
-    - lot deleted if shares reach 0
-    """
     d = request.json or {}
     try:
         _require(d, "lot_id","shares_to_sell","sale_price","date")
@@ -384,64 +397,62 @@ def record_sale():
 
     conn = get_db()
     try:
-        lot = _fetchone(conn, f"SELECT * FROM stock_lots WHERE id={p()}", (d["lot_id"],))
+        lot = _fetchone(conn,
+            f"SELECT * FROM stock_lots WHERE id={p()} AND user_id={p()}",
+            (d["lot_id"], uid()))
         if not lot:
             return jsonify({"error": "Lot not found"}), 404
 
         available = float(lot["shares"])
         if shares_to_sell > available:
             return jsonify({
-                "error": f"Cannot sell {shares_to_sell} shares — only {available} available in this lot"
+                "error": f"Cannot sell {shares_to_sell} — only {available} available in this lot"
             }), 400
 
-        # Record the sale
         _exec(conn, f"""
             INSERT INTO stock_sales
                 (user_id,lot_id,ticker,exchange,shares,purchase_price,sale_price,currency,date,broker,note)
             VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
         """, (uid(), lot["id"], lot["ticker"], lot["exchange"],
               shares_to_sell, float(lot["purchase_price"]),
-              sale_price, lot.get("currency", EXCUR.get(lot.get("exchange","NSE"),"KES")),
+              sale_price,
+              lot.get("currency") or EXCUR.get(lot.get("exchange","NSE"),"KES"),
               d["date"],
               d.get("broker", lot.get("broker","")),
               d.get("note","")))
 
-        # Reduce lot shares
         remaining = available - shares_to_sell
-        if remaining <= 0.000001:  # fully sold — keep at 0 for history
+        if remaining <= 0.000001:
             _exec(conn, f"UPDATE stock_lots SET shares=0 WHERE id={p()}", (lot["id"],))
         else:
             _exec(conn, f"UPDATE stock_lots SET shares={p()} WHERE id={p()}", (remaining, lot["id"]))
 
         conn.commit()
-
         gain = round((sale_price - float(lot["purchase_price"])) * shares_to_sell, 2)
         return jsonify({
-            "ok":          True,
-            "gain_loss":   gain,
-            "remaining":   round(remaining, 6),
-            "ticker":      lot["ticker"],
-            "exchange":    lot["exchange"],
+            "ok":        True,
+            "gain_loss": gain,
+            "remaining": round(remaining, 6),
+            "ticker":    lot["ticker"],
+            "exchange":  lot["exchange"],
         })
     finally:
         conn.close()
 
 @bp.route("/api/stocks/sale/<int:sid>", methods=["DELETE"])
-
 @approved_required
 def delete_sale(sid):
-    """Delete a sale and restore shares to the source lot."""
     conn = get_db()
     try:
-        sale = _fetchone(conn, f"SELECT * FROM stock_sales WHERE id={p()}", (sid,))
+        sale = _fetchone(conn,
+            f"SELECT * FROM stock_sales WHERE id={p()} AND user_id={p()}",
+            (sid, uid()))
         if not sale:
             return jsonify({"error": "Sale not found"}), 404
-
-        # Restore shares to lot if lot_id is set
         if sale.get("lot_id"):
-            _exec(conn, f"UPDATE stock_lots SET shares = shares + {p()} WHERE id={p()}",
-                  (float(sale["shares"]), sale["lot_id"]))
-
+            _exec(conn,
+                f"UPDATE stock_lots SET shares = shares + {p()} WHERE id={p()}",
+                (float(sale["shares"]), sale["lot_id"]))
         _exec(conn, f"DELETE FROM stock_sales WHERE id={p()}", (sid,))
         conn.commit()
     finally:
@@ -451,7 +462,6 @@ def delete_sale(sid):
 # ── Gemini price fetch ────────────────────────────────────────────────────────
 
 @bp.route("/api/stocks/fetch-prices", methods=["POST"])
-
 @approved_required
 def fetch_prices_ai():
     d = request.json or {}
@@ -463,7 +473,10 @@ def fetch_prices_ai():
 
     conn = get_db()
     try:
-        tickers = _fetchall(conn, "SELECT DISTINCT ticker, COALESCE(exchange,'NSE') as exchange FROM stock_lots WHERE shares > 0")
+        tickers = _fetchall(conn,
+            f"""SELECT DISTINCT ticker, COALESCE(exchange,'NSE') as exchange
+                FROM stock_lots WHERE shares > 0 AND user_id={p()}""",
+            (uid(),))
     finally:
         conn.close()
 
@@ -475,15 +488,23 @@ def fetch_prices_ai():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    today  = _today()
-    saved  = []
-    conn   = get_db()
+    today = _today()
+    saved = []
+    conn  = get_db()
     try:
         for tkr, price in prices.items():
-            row = _fetchone(conn, f"SELECT COALESCE(exchange,'NSE') as exchange FROM stock_lots WHERE UPPER(ticker)={p()} LIMIT 1", (tkr,))
+            row = _fetchone(conn,
+                f"""SELECT COALESCE(exchange,'NSE') as exchange, currency
+                    FROM stock_lots
+                    WHERE UPPER(ticker)={p()} AND user_id={p()} LIMIT 1""",
+                (tkr, uid()))
             exch = row["exchange"] if row else "NSE"
-            _exec(conn, f"INSERT INTO stock_prices (ticker,exchange,price,date,note) VALUES ({p()},{p()},{p()},{p()},{p()})",
-                  (tkr, exch, price, today, "Auto-fetched via Gemini AI"))
+            cur  = (row.get("currency") or EXCUR.get(exch,"KES")) if row else "KES"
+            _exec(conn,
+                f"""INSERT INTO stock_prices
+                    (user_id,ticker,exchange,price,currency,date,note)
+                    VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+                (uid(), tkr, exch, price, cur, today, "Auto-fetched via Gemini AI"))
             saved.append({"ticker": tkr, "exchange": exch, "price": price})
         conn.commit()
     finally:
@@ -498,20 +519,24 @@ def _save_snapshot():
     conn = get_db()
     try:
         port  = _build_portfolio(conn)
-        rows  = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
-        other = sum(float(r["amount"]) if r["type"]=="deposit" else -float(r["amount"]) for r in rows)
+        rows  = _fetchall(conn,
+            f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
+        other = sum(
+            float(r["amount"]) if r["type"]=="deposit" else -float(r["amount"])
+            for r in rows)
         stock = port["total_market"]
         total = stock + other
         today = _today()
+        # BUG FIX: uid() must be FIRST parameter — matches upsert_snapshot_sql()
         _exec(conn, upsert_snapshot_sql(),
-              (today, round(total,2), round(stock,2), round(other,2),
+              (uid(), today,
+               round(total,2), round(stock,2), round(other,2),
                round(port["total_cost"],2), round(port["total_gain"],2)))
         conn.commit()
     finally:
         conn.close()
 
 @bp.route("/api/portfolio/snapshot", methods=["POST"])
-
 @approved_required
 def manual_snapshot():
     try:
@@ -521,12 +546,13 @@ def manual_snapshot():
         return jsonify({"error": str(e)}), 500
 
 @bp.route("/api/portfolio/snapshots")
-
 @approved_required
 def get_snapshots():
     conn = get_db()
     try:
-        rows = _fetchall(conn, f"SELECT * FROM portfolio_snapshots WHERE user_id={ph()} ORDER BY date ASC", (uid(),))
+        rows = _fetchall(conn,
+            f"SELECT * FROM portfolio_snapshots WHERE user_id={ph()} ORDER BY date ASC",
+            (uid(),))
     finally:
         conn.close()
     for r in rows:
@@ -536,13 +562,13 @@ def get_snapshots():
 # ── Investment overview ───────────────────────────────────────────────────────
 
 @bp.route("/api/investments/overview")
-
 @approved_required
 def investment_overview():
     conn = get_db()
     try:
         port     = _build_portfolio(conn)
-        sav_rows = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
+        sav_rows = _fetchall(conn,
+            f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
     finally:
         conn.close()
 
@@ -557,22 +583,29 @@ def investment_overview():
     stock_by_exch = {}
     for h in port["holdings"]:
         cls = f"Stocks ({h['exchange']})"
-        cur = EXCUR.get(h["exchange"],"—")
+        cur = h.get("currency") or EXCUR.get(h["exchange"],"—")
         if cls not in stock_by_exch:
-            stock_by_exch[cls] = {"value":0,"cost":0,"currency":cur,"type":"stocks","exchange":h["exchange"]}
+            stock_by_exch[cls] = {"value":0,"cost":0,"currency":cur,
+                                   "type":"stocks","exchange":h["exchange"]}
         val = h["market_value"] if h["market_value"] is not None else h["total_cost"]
         stock_by_exch[cls]["value"] += val
         stock_by_exch[cls]["cost"]  += h["total_cost"]
 
-    asset_summary = {**{cls:d for cls,d in stock_by_exch.items()},
-                     **{cls:{"value":v,"cost":v,"currency":"KES","type":"savings"}
-                        for cls,v in sav_by_class.items()}}
+    asset_summary = {
+        **{cls:d for cls,d in stock_by_exch.items()},
+        **{cls:{"value":v,"cost":v,"currency":"KES","type":"savings"}
+           for cls,v in sav_by_class.items()}
+    }
     total_all = sum(v["value"] for v in asset_summary.values())
     for d in asset_summary.values():
         gain = d["value"] - d["cost"]
-        d.update({"gain":round(gain,2),"gain_pct":round(gain/d["cost"]*100,2) if d["cost"] else 0,
-                  "value":round(d["value"],2),"cost":round(d["cost"],2),
-                  "pct_total":round(d["value"]/total_all*100,1) if total_all else 0})
+        d.update({
+            "gain":      round(gain,2),
+            "gain_pct":  round(gain/d["cost"]*100,2) if d["cost"] else 0,
+            "value":     round(d["value"],2),
+            "cost":      round(d["cost"],2),
+            "pct_total": round(d["value"]/total_all*100,1) if total_all else 0,
+        })
 
     return jsonify({
         "asset_summary":  asset_summary,
@@ -580,17 +613,22 @@ def investment_overview():
         "total_cost":     round(sum(v["cost"] for v in asset_summary.values()),2),
         "total_gain":     round(sum(v["gain"] for v in asset_summary.values()),2),
         "total_realized": port["total_realized"],
-        "broker_totals":  {k: round(v,2) for k,v in sorted(broker_totals.items(), key=lambda x:-x[1])},
-        "stock_summary":  {"total_cost":port["total_cost"],"total_market":port["total_market"],
-                           "total_gain":port["total_gain"],"pct":port["portfolio_pct"]},
-        "savings_net":    round(sum(sav_by_class.values()),2),
-        "currency_note":  any(v.get("currency") not in ("KES","—") for v in asset_summary.values()),
+        "broker_totals":  {k: round(v,2) for k,v in
+                           sorted(broker_totals.items(), key=lambda x:-x[1])},
+        "stock_summary":  {
+            "total_cost":   port["total_cost"],
+            "total_market": port["total_market"],
+            "total_gain":   port["total_gain"],
+            "pct":          port["portfolio_pct"],
+        },
+        "savings_net":   round(sum(sav_by_class.values()),2),
+        "currency_note": any(v.get("currency") not in ("KES","—")
+                             for v in asset_summary.values()),
     })
 
 # ── Portfolio review ──────────────────────────────────────────────────────────
 
 @bp.route("/api/portfolio/review", methods=["POST"])
-
 @approved_required
 def gen_review():
     api_key = get_gemini_key(uid())
@@ -600,7 +638,11 @@ def gen_review():
     try:
         port = _build_portfolio(conn)
         sav  = {}
-        for r in _fetchall(conn, "SELECT asset_class, SUM(CASE WHEN type='deposit' THEN amount ELSE -amount END) as v FROM savings GROUP BY asset_class"):
+        for r in _fetchall(conn,
+            f"""SELECT asset_class,
+                       SUM(CASE WHEN type='deposit' THEN amount ELSE -amount END) as v
+                FROM savings WHERE user_id={ph()}
+                GROUP BY asset_class""", (uid(),)):
             sav[r["asset_class"]] = float(r["v"])
     finally:
         conn.close()
@@ -612,7 +654,6 @@ def gen_review():
     return jsonify({"ok": True, "review": review})
 
 @bp.route("/api/portfolio/review")
-
 @approved_required
 def get_review():
     raw = cfg_get(uid(), "last_review")
@@ -628,10 +669,13 @@ def get_review():
 def get_config():
     import os
     using_secret_mgr = bool(os.environ.get("GEMINI_SECRET_NAME"))
-    key = get_gemini_key(uid()) or ""
+    key    = get_gemini_key(uid()) or ""
     masked = ("*"*max(0,len(key)-4)+key[-4:]) if len(key)>4 else "*"*len(key)
-    return jsonify({"gemini_key_set": bool(key), "gemini_key_masked": masked,
-                    "using_secret_manager": using_secret_mgr})
+    return jsonify({
+        "gemini_key_set":       bool(key),
+        "gemini_key_masked":    masked,
+        "using_secret_manager": using_secret_mgr,
+    })
 
 @bp.route("/api/config", methods=["POST"])
 @approved_required
@@ -647,56 +691,62 @@ def set_config():
 # ── CSV exports ───────────────────────────────────────────────────────────────
 
 @bp.route("/api/export/lots.csv")
-
 @approved_required
 def export_lots():
     conn = get_db()
     try:
-        rows = _fetchall(conn, "SELECT * FROM stock_lots ORDER BY ticker,date")
+        rows = _fetchall(conn,
+            f"SELECT * FROM stock_lots WHERE user_id={p()} ORDER BY ticker,date", (uid(),))
     finally:
         conn.close()
     out = io.StringIO()
     w   = csv.writer(out)
-    w.writerow(["Date","Ticker","Exchange","Shares Remaining","Original Shares","Purchase Price","Current Value","Broker","Note"])
+    w.writerow(["Date","Ticker","Exchange","Shares Remaining","Original Shares",
+                "Purchase Price","Currency","Current Value","Broker","Note"])
     for r in rows:
-        w.writerow([r["date"],r["ticker"],r["exchange"],r["shares"],r.get("original_shares",""),
-                    r["purchase_price"],round(float(r["shares"])*float(r["purchase_price"]),2),
-                    r["broker"],r["note"]])
+        w.writerow([r["date"], r["ticker"], r["exchange"], r["shares"],
+                    r.get("original_shares",""), r["purchase_price"],
+                    r.get("currency","KES"),
+                    round(float(r["shares"])*float(r["purchase_price"]),2),
+                    r["broker"], r["note"]])
     return Response(out.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition":"attachment;filename=stock_lots.csv"})
 
 @bp.route("/api/export/savings.csv")
-
 @approved_required
 def export_savings():
     conn = get_db()
     try:
-        rows = _fetchall(conn, f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC", (uid(),))
+        rows = _fetchall(conn,
+            f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC", (uid(),))
     finally:
         conn.close()
     out = io.StringIO()
     w   = csv.writer(out)
-    w.writerow(["Date","Label","Asset Class","Type","Amount","Note"])
+    w.writerow(["Date","Label","Asset Class","Type","Amount","Currency","Note"])
     for r in rows:
-        w.writerow([r["date"],r["label"],r["asset_class"],r["type"],r["amount"],r["note"]])
+        w.writerow([r["date"], r["label"], r["asset_class"], r["type"],
+                    r["amount"], r.get("currency","KES"), r["note"]])
     return Response(out.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition":"attachment;filename=savings.csv"})
 
 @bp.route("/api/export/sales.csv")
-
 @approved_required
 def export_sales():
     conn = get_db()
     try:
-        rows = _fetchall(conn, "SELECT * FROM stock_sales ORDER BY date DESC")
+        rows = _fetchall(conn,
+            f"SELECT * FROM stock_sales WHERE user_id={p()} ORDER BY date DESC", (uid(),))
     finally:
         conn.close()
     out = io.StringIO()
     w   = csv.writer(out)
-    w.writerow(["Date","Ticker","Exchange","Shares","Buy Price","Sale Price","Gain/Loss","Broker","Note"])
+    w.writerow(["Date","Ticker","Exchange","Shares","Buy Price",
+                "Sale Price","Gain/Loss","Currency","Broker","Note"])
     for r in rows:
         gain = round((float(r["sale_price"])-float(r["purchase_price"]))*float(r["shares"]),2)
-        w.writerow([r["date"],r["ticker"],r["exchange"],r["shares"],
-                    r["purchase_price"],r["sale_price"],gain,r["broker"],r["note"]])
+        w.writerow([r["date"], r["ticker"], r["exchange"], r["shares"],
+                    r["purchase_price"], r["sale_price"], gain,
+                    r.get("currency","KES"), r["broker"], r["note"]])
     return Response(out.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition":"attachment;filename=sales.csv"})
