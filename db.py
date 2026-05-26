@@ -226,26 +226,34 @@ CREATE TABLE IF NOT EXISTS config (
 def init_db():
     conn = get_db()
     try:
-        cur = conn.cursor()
         if is_pg():
+            # CRITICAL: use autocommit for DDL so a failed migration doesn't
+            # poison the transaction and roll back our CREATE TABLE statements.
+            conn.autocommit = True
+            cur = conn.cursor()
             for s in [x.strip() for x in _PG.split(";") if x.strip()]:
-                cur.execute(s)
+                try:
+                    cur.execute(s)
+                    print(f"  ✓ {s[:60]}...", flush=True)
+                except Exception as e:
+                    print(f"  ⚠ Skipped: {str(e)[:80]}", flush=True)
+            _migrate_pg(conn)
         else:
             conn.executescript(_SQLITE)
-        _migrate(conn)
-        conn.commit()
+            _migrate_sqlite(conn)
+            conn.commit()
     finally:
         conn.close()
 
-def _migrate(conn):
-    p = ph()
+def _migrate_pg(conn):
+    """PostgreSQL migrations — each in its own autocommitted statement."""
+    cur = conn.cursor()
     for table, col in [
         ("savings",    "currency TEXT NOT NULL DEFAULT 'KES'"),
         ("savings",    "user_id INTEGER NOT NULL DEFAULT 1"),
         ("stock_lots", "currency TEXT NOT NULL DEFAULT 'KES'"),
         ("stock_lots", "user_id INTEGER NOT NULL DEFAULT 1"),
-        ("stock_lots", "original_shares REAL"),
-        ("stock_lots", "lot_id INTEGER"),
+        ("stock_lots", "original_shares NUMERIC(15,6)"),
         ("stock_prices","currency TEXT NOT NULL DEFAULT 'KES'"),
         ("stock_prices","user_id INTEGER NOT NULL DEFAULT 1"),
         ("stock_sales", "currency TEXT NOT NULL DEFAULT 'KES'"),
@@ -255,13 +263,31 @@ def _migrate(conn):
         ("subscriptions","user_id INTEGER NOT NULL DEFAULT 1"),
     ]:
         try:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col}")
+        except Exception:
+            pass
+    try:
+        cur.execute("UPDATE stock_lots SET original_shares=shares WHERE original_shares IS NULL")
+    except Exception:
+        pass
+
+def _migrate_sqlite(conn):
+    """SQLite migrations — ALTER TABLE ADD COLUMN, ignore if exists."""
+    for table, col in [
+        ("savings",    "currency TEXT NOT NULL DEFAULT 'KES'"),
+        ("stock_lots", "currency TEXT NOT NULL DEFAULT 'KES'"),
+        ("stock_lots", "original_shares REAL"),
+        ("stock_prices","currency TEXT NOT NULL DEFAULT 'KES'"),
+        ("stock_sales", "currency TEXT NOT NULL DEFAULT 'KES'"),
+        ("stock_sales", "lot_id INTEGER"),
+    ]:
+        try:
             conn.cursor().execute(f"ALTER TABLE {table} ADD COLUMN {col}")
         except: pass
     try:
         conn.cursor().execute(
             "UPDATE stock_lots SET original_shares=shares WHERE original_shares IS NULL")
     except: pass
-    conn.commit()
 
 # ── Config helpers (per-user) ─────────────────────────────────────────────────
 def cfg_get(user_id, key, default=None):
