@@ -101,6 +101,47 @@
     <button class="btn btn-primary" onclick="addLot()">Add Purchase</button>
   </div>
 
+
+  <!-- Excel import -->
+  <div class="panel" id="excel-import-panel">
+    <div class="panel-title" style="justify-content:space-between">
+      <span>Import from Excel <span style="font-size:.68rem;color:var(--text3);margin-left:.4rem">bulk upload lots</span></span>
+      <a href="/api/upload/lots-template" class="btn btn-ghost btn-sm" style="font-size:.72rem" download>↓ Download Template</a>
+    </div>
+    <p class="panel-hint">Upload your Excel sheet (.xlsx). Preview rows before saving — nothing is written until you click Import.</p>
+    <div class="upload-zone" id="upload-zone"
+         onclick="document.getElementById('excel-file-input').click()"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')"
+         ondrop="handleFileDrop(event)">
+      <div class="upload-icon">📊</div>
+      <div class="upload-label">Click to choose file or drag &amp; drop here</div>
+      <div class="upload-sub">.xlsx files only · max 5MB</div>
+      <input type="file" id="excel-file-input" accept=".xlsx,.xls"
+             style="display:none" onchange="handleFileSelect(this)"/>
+    </div>
+    <div id="upload-preview" style="display:none;margin-top:1.2rem">
+      <div id="upload-summary" style="font-size:.82rem;margin-bottom:.8rem;padding:.6rem .9rem;border-radius:7px;background:var(--bg3);border:1px solid var(--border2)"></div>
+      <div id="upload-errors" style="display:none;margin-bottom:.8rem"></div>
+      <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+        <table class="data-table" id="upload-table">
+          <thead><tr>
+            <th style="width:32px"></th>
+            <th>Ticker</th><th>Exchange</th><th>Shares</th>
+            <th>Buy Price</th><th>Currency</th><th>Date</th>
+            <th>Broker</th><th>Lot Value</th>
+          </tr></thead>
+          <tbody id="upload-body"></tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:.8rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
+        <button class="btn btn-primary" id="confirm-import-btn" onclick="confirmImport()">Import All Rows</button>
+        <button class="btn btn-ghost" onclick="cancelUpload()">Cancel</button>
+        <span id="import-result" style="font-size:.82rem;font-family:var(--font-mono)"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- Manual price -->
   <div class="panel">
     <div class="panel-title">Update Market Price Manually</div>

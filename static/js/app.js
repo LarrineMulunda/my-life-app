@@ -822,3 +822,113 @@ async function saveDurationPayment(){const sid=document.getElementById("pd-sub-i
 function openAttend(id){document.getElementById("m-class-id").value=id;document.getElementById("m-date").value=today();document.getElementById("m-note").value="";document.getElementById("attend-modal").style.display="flex";}
 async function confirmSubAttend(){const id=document.getElementById("m-class-id").value;const date=document.getElementById("m-date").value;const note=document.getElementById("m-note").value.trim();const d=await api("PUT",`/api/subscriptions/class/${id}/attend`,{attended:true,scheduled_date:date,note});if(d.ok){closeModal("attend-modal");toast("Session marked attended ✓");loadSubscriptions();}}
 async function unmarkAttend(id){const d=await api("PUT",`/api/subscriptions/class/${id}/attend`,{attended:false});if(d.ok){toast("Attendance unmarked.");loadSubscriptions();}}
+
+
+// ── Excel upload ─────────────────────────────────────────────────────────────
+let _uploadRows = [];
+
+function handleFileDrop(e) {
+  e.preventDefault();
+  document.getElementById("upload-zone").classList.remove("drag-over");
+  const file = e.dataTransfer.files[0];
+  if (file) processUploadFile(file);
+}
+
+function handleFileSelect(input) {
+  const file = input.files[0];
+  if (file) processUploadFile(file);
+}
+
+async function processUploadFile(file) {
+  if (!file.name.match(/\.xlsx?$/i)) { toast("Please upload an .xlsx file.", "error"); return; }
+  if (file.size > 5 * 1024 * 1024)   { toast("File is too large — max 5MB.", "error"); return; }
+
+  const zone = document.getElementById("upload-zone");
+  zone.querySelector(".upload-label").textContent = `Parsing ${file.name}...`;
+
+  const form = new FormData();
+  form.append("file", file);
+
+  let data;
+  try {
+    const resp = await fetch("/api/upload/lots-preview", { method: "POST", body: form });
+    data = await resp.json();
+  } catch(e) {
+    toast("Upload failed — " + e.message, "error");
+    zone.querySelector(".upload-label").textContent = "Click to choose file or drag & drop here";
+    return;
+  }
+  zone.querySelector(".upload-label").textContent = "Click to choose file or drag & drop here";
+  if (data.error) { toast(data.error, "error"); return; }
+
+  _uploadRows = data.rows || [];
+  renderUploadPreview(data);
+}
+
+function renderUploadPreview(data) {
+  document.getElementById("upload-preview").style.display = "block";
+  const hasErr = data.errors && data.errors.length > 0;
+  document.getElementById("upload-summary").innerHTML =
+    `<span style="color:var(--green)">✓ ${data.count} row(s) ready to import</span>` +
+    (hasErr ? `<span style="color:var(--red);margin-left:1rem">⚠ ${data.errors.length} row(s) skipped</span>` : "");
+
+  const errBox = document.getElementById("upload-errors");
+  if (hasErr) {
+    errBox.style.display = "block";
+    errBox.innerHTML = data.errors.map(e => `<div class="upload-err-row">⚠ ${e}</div>`).join("");
+  } else {
+    errBox.style.display = "none";
+  }
+
+  const tbody = document.getElementById("upload-body");
+  tbody.innerHTML = _uploadRows.map((r, i) => `
+    <tr>
+      <td class="row-check"><input type="checkbox" checked data-idx="${i}" onchange="updateRowSelection()"/></td>
+      <td class="mo wht">${r.ticker}</td>
+      <td><span style="font-family:var(--font-mono);font-size:.66rem;background:var(--bg3);border:1px solid var(--border2);padding:.05rem .3rem;border-radius:3px">${r.exchange}</span></td>
+      <td class="mo">${r.shares.toLocaleString()}</td>
+      <td class="mo">${Number(r.purchase_price).toFixed(4)}</td>
+      <td class="mo" style="color:var(--gold2)">${r.currency}</td>
+      <td class="mo">${r.date}</td>
+      <td style="color:var(--text2)">${r.broker || "—"}</td>
+      <td class="mo" style="color:var(--gold2)">${r.currency} ${Number(r.lot_value).toLocaleString()}</td>
+    </tr>`).join("");
+
+  document.getElementById("import-result").textContent = "";
+  document.getElementById("confirm-import-btn").textContent = `Import ${_uploadRows.length} Row(s)`;
+}
+
+function updateRowSelection() {
+  const n = document.querySelectorAll("#upload-body input[type=checkbox]:checked").length;
+  const btn = document.getElementById("confirm-import-btn");
+  if (btn) btn.textContent = `Import ${n} Row(s)`;
+}
+
+async function confirmImport() {
+  const checked = Array.from(
+    document.querySelectorAll("#upload-body input[type=checkbox]:checked"))
+    .map(cb => _uploadRows[parseInt(cb.dataset.idx)]);
+  if (!checked.length) { toast("Select at least one row to import.", "error"); return; }
+
+  const btn = document.getElementById("confirm-import-btn");
+  btn.textContent = "Importing...";
+  btn.disabled    = true;
+
+  const data = await api("POST", "/api/upload/lots-confirm", { rows: checked });
+  btn.disabled    = false;
+  btn.textContent = `Import ${checked.length} Row(s)`;
+
+  if (data.ok) {
+    document.getElementById("import-result").innerHTML =
+      `<span style="color:var(--green)">✓ ${data.message}</span>`;
+    toast(`✓ ${data.saved} lot(s) imported`);
+    setTimeout(() => { cancelUpload(); loadStocks(); loadOverview(); loadActiveLots(); }, 1500);
+  }
+}
+
+function cancelUpload() {
+  document.getElementById("upload-preview").style.display = "none";
+  const inp = document.getElementById("excel-file-input");
+  if (inp) inp.value = "";
+  _uploadRows = [];
+}
