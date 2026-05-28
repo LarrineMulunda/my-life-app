@@ -328,25 +328,18 @@ def delete_lot(lid):
 def add_price():
     d = request.json or {}
     try:
-        _exec(
-        conn,
-        f"""
-        INSERT INTO stock_prices
-        (ticker, exchange, price, currency, date, note)
-        VALUES ({p()},{p()},{p()},{p()},{p()},{p()})
-        """,
-        (
-            d["ticker"].upper().strip(),
-            d["exchange"],
-            float(d["price"]),
-            d.get("currency", EXCUR.get(d.get("exchange", "NSE"), "KES")),
-            d["date"],
-            d.get("note", "")
-        )
-    )
-
-    conn.commit()
-        
+        _require(d, "ticker","exchange","price","date")
+        if float(d["price"]) <= 0:
+            raise ValueError("price must be positive")
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    conn = get_db()
+    try:
+        _exec(conn, f"INSERT INTO stock_prices (user_id,ticker,exchange,price,currency,date,note) VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()})",
+              (uid(), d["ticker"].upper().strip(), d["exchange"],
+               float(d["price"]), d.get("currency", EXCUR.get(d.get("exchange","NSE"),"KES")),
+               d["date"], d.get("note","")))
+        conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True})
