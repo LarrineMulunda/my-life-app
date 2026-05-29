@@ -6,6 +6,7 @@ from routes.auth import bp as auth_bp, login_mgr, approved_required
 from routes.investments import bp as inv_bp, ASSET_CLASSES, EXCHANGES, EXCUR
 from routes.upload_lots import bp as upload_bp
 from routes.subscriptions import bp as sub_bp
+from routes.habits import bp as habits_bp
 from services.tickers import seed_tickers, CURRENCIES
 
 app = Flask(__name__)
@@ -19,6 +20,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(inv_bp)
 app.register_blueprint(sub_bp)
 app.register_blueprint(upload_bp)
+app.register_blueprint(habits_bp)
 
 # Init DB + seed tickers
 init_db()
@@ -54,6 +56,17 @@ def investments_page():
 @approved_required
 def subscriptions_page():
     return render_template("subscriptions.html", categories=SUB_CATEGORIES)
+
+HABIT_CATEGORIES = ["Health","Fitness","Mind","Learning","Productivity",
+                    "Finance","Social","Creative","Other"]
+HABIT_ICONS = ["✓","🏃","💪","📖","🧘","💧","🍎","😴","✍️","🎯","🎸","💰","☀️","🌙"]
+
+@main_bp.route("/habits")
+@approved_required
+def habits_page():
+    return render_template("habits.html",
+                           categories=HABIT_CATEGORIES,
+                           icons=HABIT_ICONS)
 
 app.register_blueprint(main_bp)
 

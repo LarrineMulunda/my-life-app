@@ -15,6 +15,7 @@
     <div class="nav-links">
       <a href="/investments"   class="nav-link {% if request.path=='/investments' %}active{% endif %}">investments</a>
       <a href="/subscriptions" class="nav-link {% if request.path=='/subscriptions' %}active{% endif %}">subscriptions</a>
+      <a href="/habits" class="nav-link {% if request.path=='/habits' %}active{% endif %}">habits</a>
     </div>
     <div class="nav-user">
       <span class="nav-name">{{ current_user.name }}</span>

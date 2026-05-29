@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}Habits — My Life{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div class="page-label">module 03</div>
+  <h1 class="page-title">Habit Tracker</h1>
+</div>
+
+<!-- Insights summary -->
+<div class="stat-row" id="habit-insights">
+  <div class="stat-card"><div class="stat-label">Active Habits</div><div class="stat-value" id="hi-total">—</div></div>
+  <div class="stat-card"><div class="stat-label">On Track This Week</div><div class="stat-value" id="hi-ontrack">—</div></div>
+  <div class="stat-card"><div class="stat-label">Longest Current Streak</div><div class="stat-value" id="hi-streak">—</div></div>
+  <div class="stat-card"><div class="stat-label">Avg Completion</div><div class="stat-value" id="hi-completion">—</div></div>
+</div>
+
+<!-- 7-day heatmap -->
+<div class="panel">
+  <div class="panel-title">Last 7 Days</div>
+  <div id="week-heatmap" class="week-heatmap"></div>
+</div>
+
+<!-- Add habit -->
+<div class="panel">
+  <div class="panel-title">New Habit</div>
+  <div class="form-grid">
+    <div class="field">
+      <label>Habit Name</label>
+      <input type="text" id="h-name" placeholder="e.g. Morning run, Read 20 min, Drink water"/>
+    </div>
+    <div class="field">
+      <label>Icon</label>
+      <select id="h-icon">
+        {% for ic in icons %}<option value="{{ ic }}">{{ ic }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label>Category</label>
+      <select id="h-category">
+        {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label>Times per Week (target)</label>
+      <select id="h-target">
+        {% for n in range(1,8) %}<option value="{{ n }}" {% if n==7 %}selected{% endif %}>{{ n }}x / week</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label>Colour</label>
+      <input type="color" id="h-color" value="#C9A84C" style="height:38px;padding:.2rem"/>
+    </div>
+  </div>
+  <button class="btn btn-primary" onclick="addHabit()">Add Habit</button>
+</div>
+
+<!-- Habit cards with calendars -->
+<div id="habits-list"></div>
+
+<script>
+// ── Habit tracker ─────────────────────────────────────────────────────────────
+let _habits = [];
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DAYS   = ["M","T","W","T","F","S","S"];
+
+async function api(method, url, body) {
+  const opt = { method, headers: {"Content-Type":"application/json"} };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(url, opt);
+  return r.json();
+}
+
+function toast(msg, type) {
+  const t = document.getElementById("toast");
+  if (!t) { return; }
+  t.textContent = msg;
+  t.className = "show " + (type || "");
+  setTimeout(() => t.className = "", 2600);
+}
+
+async function loadHabits() {
+  const d = await api("GET", "/api/habits");
+  _habits = d.habits || [];
+  renderHabits();
+  loadInsights();
+}
+
+async function loadInsights() {
+  const d = await api("GET", "/api/habits/insights");
+  document.getElementById("hi-total").textContent      = d.total_habits ?? 0;
+  document.getElementById("hi-ontrack").textContent    = `${d.on_track ?? 0} / ${d.total_habits ?? 0}`;
+  document.getElementById("hi-streak").textContent     = `${d.longest_current ?? 0} days`;
+  document.getElementById("hi-completion").textContent = `${d.avg_completion ?? 0}%`;
+
+  // Heatmap
+  const hm = document.getElementById("week-heatmap");
+  const max = Math.max(1, ...(d.week_heatmap || []).map(x => x.count));
+  hm.innerHTML = (d.week_heatmap || []).map(day => {
+    const intensity = day.count / max;
+    const dt = new Date(day.date + "T00:00:00");
+    const bg = day.count === 0 ? "var(--bg3)" :
+               `rgba(201,168,76,${0.25 + intensity*0.75})`;
+    return `<div class="heat-cell">
+      <div class="heat-box" style="background:${bg}" title="${day.count} habits on ${day.date}"></div>
+      <div class="heat-label">${dt.getDate()}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderHabits() {
+  const wrap = document.getElementById("habits-list");
+  if (!_habits.length) {
+    wrap.innerHTML = `<div class="empty-note">No habits yet. Add your first one above to start tracking.</div>`;
+    return;
+  }
+  wrap.innerHTML = _habits.map(h => habitCard(h)).join("");
+}
+
+function habitCard(h) {
+  const s = h.stats || {};
+  const done = new Set(h.log_dates || []);
+
+  // Build last 5 weeks calendar (35 days) ending today
+  const today = new Date();
+  const cells = [];
+  for (let i = 34; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const iso = d.toISOString().slice(0,10);
+    const isDone = done.has(iso);
+    const isToday = i === 0;
+    cells.push(`
+      <div class="cal-day ${isDone ? 'done' : ''} ${isToday ? 'today' : ''}"
+           style="${isDone ? `background:${h.color};border-color:${h.color}` : ''}"
+           onclick="toggleDay(${h.id}, '${iso}')"
+           title="${iso}">
+        ${d.getDate()}
+      </div>`);
+  }
+
+  const onTrackBadge = s.on_track
+    ? `<span class="badge-ok">on track</span>`
+    : `<span class="badge-warn">${s.this_week||0}/${s.target_per_week||7} this week</span>`;
+
+  return `
+    <div class="panel habit-card">
+      <div class="habit-head">
+        <div class="habit-title">
+          <span class="habit-icon" style="background:${h.color}22;color:${h.color}">${h.icon}</span>
+          <div>
+            <div class="habit-name">${h.name}</div>
+            <div class="habit-cat">${h.category} · ${s.target_per_week||7}× per week</div>
+          </div>
+        </div>
+        <div class="habit-actions">
+          ${onTrackBadge}
+          <button class="icon-btn" onclick="deleteHabit(${h.id})" title="Delete">✕</button>
+        </div>
+      </div>
+
+      <div class="habit-stats">
+        <div class="hstat"><span class="hstat-num" style="color:${h.color}">${s.current_streak||0}</span><span class="hstat-lbl">current streak</span></div>
+        <div class="hstat"><span class="hstat-num">${s.best_streak||0}</span><span class="hstat-lbl">best streak</span></div>
+        <div class="hstat"><span class="hstat-num">${s.total_done||0}</span><span class="hstat-lbl">total done</span></div>
+        <div class="hstat"><span class="hstat-num">${s.completion_rate||0}%</span><span class="hstat-lbl">completion</span></div>
+      </div>
+
+      <div class="week-progress-bar">
+        <div class="wpb-fill" style="width:${Math.min(100,s.week_progress||0)}%;background:${h.color}"></div>
+      </div>
+
+      <div class="cal-grid">${cells.join("")}</div>
+
+      <div class="cal-hint">Tap a day to mark done · last 5 weeks shown</div>
+    </div>`;
+}
+
+async function addHabit() {
+  const name   = document.getElementById("h-name").value.trim();
+  const icon   = document.getElementById("h-icon").value;
+  const category = document.getElementById("h-category").value;
+  const target = parseInt(document.getElementById("h-target").value);
+  const color  = document.getElementById("h-color").value;
+
+  if (!name) { toast("Enter a habit name.", "error"); return; }
+
+  const d = await api("POST", "/api/habits",
+    { name, icon, category, target_per_week: target, color });
+  if (d.ok) {
+    toast("Habit added ✓");
+    document.getElementById("h-name").value = "";
+    loadHabits();
+  } else {
+    toast(d.error || "Could not add habit", "error");
+  }
+}
+
+async function toggleDay(hid, date) {
+  const d = await api("POST", `/api/habits/${hid}/toggle`, { date });
+  if (d.ok) {
+    // Update local state and re-render just this habit
+    const h = _habits.find(x => x.id === hid);
+    if (h) {
+      const set = new Set(h.log_dates);
+      if (d.done) set.add(date); else set.delete(date);
+      h.log_dates = [...set].sort();
+    }
+    loadHabits();  // reload to refresh stats
+  }
+}
+
+async function deleteHabit(hid) {
+  if (!confirm("Delete this habit and all its history?")) return;
+  const d = await api("DELETE", `/api/habits/${hid}`);
+  if (d.ok) { toast("Habit deleted."); loadHabits(); }
+}
+
+loadHabits();
+</script>
+
+<style>
+.week-heatmap { display:flex; gap:.6rem; padding:.4rem 0; }
+.heat-cell { display:flex; flex-direction:column; align-items:center; gap:.3rem; flex:1; }
+.heat-box { width:100%; aspect-ratio:1; max-width:48px; border-radius:8px; border:1px solid var(--border); }
+.heat-label { font-family:var(--font-mono); font-size:.6rem; color:var(--text3); }
+
+.habit-card { margin-bottom:1rem; }
+.habit-head { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem; }
+.habit-title { display:flex; gap:.8rem; align-items:center; }
+.habit-icon { width:42px; height:42px; border-radius:11px; display:flex; align-items:center; justify-content:center; font-size:1.3rem; flex-shrink:0; }
+.habit-name { font-size:1.05rem; color:var(--text); font-weight:400; }
+.habit-cat  { font-family:var(--font-mono); font-size:.66rem; color:var(--text3); margin-top:.15rem; }
+.habit-actions { display:flex; align-items:center; gap:.6rem; }
+.icon-btn { background:none; border:none; color:var(--text3); cursor:pointer; font-size:.85rem; padding:.2rem .4rem; }
+.icon-btn:hover { color:var(--red); }
+.badge-ok   { font-family:var(--font-mono); font-size:.6rem; background:rgba(92,158,106,.15); color:var(--green); padding:.18rem .5rem; border-radius:5px; border:1px solid rgba(92,158,106,.3); }
+.badge-warn { font-family:var(--font-mono); font-size:.6rem; background:rgba(201,168,76,.12); color:var(--gold); padding:.18rem .5rem; border-radius:5px; border:1px solid rgba(201,168,76,.25); }
+
+.habit-stats { display:flex; gap:1.5rem; margin-bottom:1rem; flex-wrap:wrap; }
+.hstat { display:flex; flex-direction:column; }
+.hstat-num { font-size:1.3rem; font-weight:300; color:var(--text); font-family:var(--font-serif); }
+.hstat-lbl { font-family:var(--font-mono); font-size:.58rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text3); margin-top:.1rem; }
+
+.week-progress-bar { height:5px; background:var(--bg3); border-radius:3px; overflow:hidden; margin-bottom:1.1rem; }
+.wpb-fill { height:100%; border-radius:3px; transition:width .3s; }
+
+.cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:.4rem; }
+.cal-day {
+  aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+  background:var(--bg3); border:1px solid var(--border);
+  border-radius:7px; cursor:pointer; font-family:var(--font-mono);
+  font-size:.7rem; color:var(--text3); transition:transform .1s, background .15s;
+  user-select:none; max-height:42px;
+}
+.cal-day:hover { transform:scale(1.08); border-color:var(--gold); }
+.cal-day.done  { color:#0f0e0c; font-weight:500; }
+.cal-day.today { box-shadow:0 0 0 2px var(--gold); }
+.cal-hint { font-family:var(--font-mono); font-size:.62rem; color:var(--text3); margin-top:.7rem; text-align:center; }
+
+.empty-note { text-align:center; color:var(--text3); font-style:italic; padding:2rem; }
+</style>
+{% endblock %}

@@ -130,6 +130,40 @@ CREATE TABLE IF NOT EXISTS config (
     key TEXT NOT NULL, value TEXT NOT NULL,
     PRIMARY KEY(user_id, key)
 );
+CREATE TABLE IF NOT EXISTS global_prices (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    ticker TEXT NOT NULL, exchange TEXT NOT NULL DEFAULT 'NSE',
+    price NUMERIC(15,4) NOT NULL CHECK(price > 0),
+    currency TEXT NOT NULL DEFAULT 'KES',
+    date DATE NOT NULL, note TEXT DEFAULT '',
+    UNIQUE(ticker, exchange, date)
+);
+CREATE TABLE IF NOT EXISTS global_fx (
+    currency TEXT PRIMARY KEY,
+    kes_rate NUMERIC(15,6) NOT NULL,
+    updated_date DATE NOT NULL
+);
+CREATE TABLE IF NOT EXISTS habits (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT '✓',
+    color TEXT DEFAULT '#C9A84C',
+    target_per_week INTEGER NOT NULL DEFAULT 7,
+    category TEXT DEFAULT 'General',
+    note TEXT DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_date DATE NOT NULL
+);
+CREATE TABLE IF NOT EXISTS habit_logs (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    habit_id INTEGER NOT NULL REFERENCES habits(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    date DATE NOT NULL,
+    done BOOLEAN NOT NULL DEFAULT TRUE,
+    note TEXT DEFAULT '',
+    UNIQUE(habit_id, date)
+);
 """
 
 _SQLITE = """
@@ -221,47 +255,92 @@ CREATE TABLE IF NOT EXISTS config (
     key TEXT NOT NULL, value TEXT NOT NULL,
     PRIMARY KEY(user_id, key)
 );
+CREATE TABLE IF NOT EXISTS global_prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL, exchange TEXT NOT NULL DEFAULT 'NSE',
+    price REAL NOT NULL CHECK(price > 0),
+    currency TEXT NOT NULL DEFAULT 'KES',
+    date TEXT NOT NULL, note TEXT DEFAULT '',
+    UNIQUE(ticker, exchange, date)
+);
+CREATE TABLE IF NOT EXISTS global_fx (
+    currency TEXT PRIMARY KEY,
+    kes_rate REAL NOT NULL,
+    updated_date TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT '✓',
+    color TEXT DEFAULT '#C9A84C',
+    target_per_week INTEGER NOT NULL DEFAULT 7,
+    category TEXT DEFAULT 'General',
+    note TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_date TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS habit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit_id INTEGER NOT NULL REFERENCES habits(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    date TEXT NOT NULL,
+    done INTEGER NOT NULL DEFAULT 1,
+    note TEXT DEFAULT '',
+    UNIQUE(habit_id, date)
+);
 """
 
 def init_db():
     conn = get_db()
     try:
-        cur = conn.cursor()
         if is_pg():
+            # autocommit so a failed statement doesn't poison the whole transaction
+            conn.autocommit = True
+            cur = conn.cursor()
             for s in [x.strip() for x in _PG.split(";") if x.strip()]:
-                cur.execute(s)
+                try:
+                    cur.execute(s)
+                except Exception as e:
+                    print(f"  schema stmt skipped: {str(e)[:70]}", flush=True)
+            _migrate(conn)
         else:
             conn.executescript(_SQLITE)
-        _migrate(conn)
-        conn.commit()
+            _migrate(conn)
+            conn.commit()
     finally:
         conn.close()
 
 def _migrate(conn):
-    p = ph()
-    for table, col in [
+    """Add columns to existing tables. Autocommit (PG) or committed (SQLite)."""
+    migrations = [
         ("savings",    "currency TEXT NOT NULL DEFAULT 'KES'"),
-        ("savings",    "user_id INTEGER NOT NULL DEFAULT 1"),
         ("stock_lots", "currency TEXT NOT NULL DEFAULT 'KES'"),
-        ("stock_lots", "user_id INTEGER NOT NULL DEFAULT 1"),
         ("stock_lots", "original_shares REAL"),
         ("stock_lots", "lot_id INTEGER"),
         ("stock_prices","currency TEXT NOT NULL DEFAULT 'KES'"),
-        ("stock_prices","user_id INTEGER NOT NULL DEFAULT 1"),
         ("stock_sales", "currency TEXT NOT NULL DEFAULT 'KES'"),
-        ("stock_sales", "user_id INTEGER NOT NULL DEFAULT 1"),
         ("stock_sales", "lot_id INTEGER"),
-        ("portfolio_snapshots","user_id INTEGER NOT NULL DEFAULT 1"),
-        ("subscriptions","user_id INTEGER NOT NULL DEFAULT 1"),
-    ]:
+        ("habits",     "icon TEXT DEFAULT '✓'"),
+        ("habits",     "color TEXT DEFAULT '#C9A84C'"),
+        ("habits",     "category TEXT DEFAULT 'General'"),
+    ]
+    for table, col in migrations:
         try:
             conn.cursor().execute(f"ALTER TABLE {table} ADD COLUMN {col}")
-        except: pass
+            if not is_pg():
+                conn.commit()
+        except Exception:
+            if not is_pg():
+                try: conn.rollback()
+                except: pass
     try:
         conn.cursor().execute(
             "UPDATE stock_lots SET original_shares=shares WHERE original_shares IS NULL")
-    except: pass
-    conn.commit()
+        if not is_pg():
+            conn.commit()
+    except Exception:
+        pass
 
 # ── Config helpers (per-user) ─────────────────────────────────────────────────
 def cfg_get(user_id, key, default=None):
@@ -286,6 +365,41 @@ def cfg_set(user_id, key, value):
         else:
             cur.execute("INSERT OR REPLACE INTO config (user_id,key,value) VALUES (?,?,?)",
                         (user_id, key, value))
+        conn.commit()
+    finally:
+        conn.close()
+
+# ── Global FX helpers (shared by all users) ───────────────────────────────────
+def fx_get_all():
+    """Return {currency: kes_rate} from the global table."""
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT currency, kes_rate FROM global_fx")
+        rows = cur.fetchall()
+        out = {"KES": 1.0}
+        for r in rows:
+            cur_code = r["currency"] if is_pg() else r[0]
+            rate     = r["kes_rate"] if is_pg() else r[1]
+            out[cur_code] = float(rate)
+        return out
+    finally:
+        conn.close()
+
+def fx_set(currency, kes_rate, date):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        if is_pg():
+            cur.execute("""INSERT INTO global_fx (currency,kes_rate,updated_date)
+                VALUES (%s,%s,%s)
+                ON CONFLICT(currency) DO UPDATE SET
+                  kes_rate=EXCLUDED.kes_rate, updated_date=EXCLUDED.updated_date""",
+                (currency, kes_rate, date))
+        else:
+            cur.execute("""INSERT OR REPLACE INTO global_fx
+                (currency,kes_rate,updated_date) VALUES (?,?,?)""",
+                (currency, kes_rate, date))
         conn.commit()
     finally:
         conn.close()

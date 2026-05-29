@@ -14,6 +14,13 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;bac
 .auth-field label{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text2)}
 .auth-field input{background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius);padding:.65rem .9rem;color:var(--text);font-size:.95rem;font-family:var(--font-body);outline:none;transition:border-color .2s}
 .auth-field input:focus{border-color:var(--gold)}
+.pw-wrap{position:relative}
+.pw-toggle{position:absolute;right:.7rem;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text3);font-size:.72rem;font-family:var(--font-mono);background:none;border:none;letter-spacing:.05em;user-select:none}
+.pw-toggle:hover{color:var(--gold)}
+.fp-btn{width:100%;padding:.65rem;background:transparent;color:var(--gold);border:1px solid var(--gold);border-radius:var(--radius);font-size:.88rem;font-family:var(--font-body);cursor:pointer;margin-bottom:1rem;display:flex;align-items:center;justify-content:center;gap:.5rem;transition:background .2s}
+.fp-btn:hover{background:rgba(201,168,76,.1)}
+.divider{display:flex;align-items:center;gap:.7rem;margin:1rem 0;color:var(--text3);font-size:.72rem}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
 .auth-btn{width:100%;padding:.7rem;background:var(--gold);color:var(--bg);border:none;border-radius:var(--radius);font-size:.95rem;font-family:var(--font-body);font-weight:500;cursor:pointer;margin-bottom:1.2rem}
 .auth-btn:hover{background:var(--gold2)}
 .auth-link{text-align:center;font-size:.84rem;color:var(--text2)}
@@ -32,12 +39,82 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;bac
       {% for msg in msgs %}<div class="flash">{{ msg }}</div>{% endfor %}
     {% endwith %}
     <form method="POST">
-      <div class="auth-field"><label>Email</label><input type="email" name="email" required autofocus placeholder="you@email.com"/></div>
-      <div class="auth-field"><label>Password</label><input type="password" name="password" required placeholder="••••••••"/></div>
+      <div class="auth-field"><label>Email</label><input type="email" name="email" id="login-email" required autofocus placeholder="you@email.com" value="{{ form_email|default('') }}"/></div>
+      <div class="auth-field"><label>Password</label>
+        <div class="pw-wrap">
+          <input type="password" name="password" id="login-password" required placeholder="••••••••" style="padding-right:3.2rem"/>
+          <button type="button" class="pw-toggle" onclick="togglePw('login-password',this)">SHOW</button>
+        </div>
+      </div>
       <label class="remember"><input type="checkbox" name="remember"/> Remember me for 30 days</label>
       <button class="auth-btn" type="submit">Sign In</button>
     </form>
+
+    <div class="divider">or</div>
+    <button class="fp-btn" id="fp-login-btn" onclick="fingerprintLogin()">
+      <span style="font-size:1.1rem">☉</span> Sign in with fingerprint
+    </button>
     <div class="auth-link">No account? <a href="/register">Create one</a></div>
   </div>
 </div>
+<script>
+function togglePw(id, btn) {
+  const inp = document.getElementById(id);
+  if (inp.type === "password") { inp.type = "text"; btn.textContent = "HIDE"; }
+  else { inp.type = "password"; btn.textContent = "SHOW"; }
+}
+
+// ── WebAuthn fingerprint login ──────────────────────────────────────────────
+async function fingerprintLogin() {
+  if (!window.PublicKeyCredential) {
+    alert("Fingerprint login is not supported on this device or browser.");
+    return;
+  }
+  const email = document.getElementById("login-email").value.trim();
+  if (!email) { alert("Enter your email first, then use fingerprint."); return; }
+
+  try {
+    // Request a challenge from the server
+    const beginResp = await fetch("/webauthn/login/begin", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email})
+    });
+    const options = await beginResp.json();
+    if (options.error) { alert(options.error); return; }
+
+    // Decode challenge + credential IDs
+    options.challenge = Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0));
+    if (options.allowCredentials) {
+      options.allowCredentials = options.allowCredentials.map(c => ({
+        ...c, id: Uint8Array.from(atob(c.id.replace(/-/g,'+').replace(/_/g,'/')), x => x.charCodeAt(0))
+      }));
+    }
+
+    const assertion = await navigator.credentials.get({publicKey: options});
+
+    // Send assertion back to server
+    const finishResp = await fetch("/webauthn/login/finish", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        email,
+        id: assertion.id,
+        rawId: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))),
+        response: {
+          authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))),
+          clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON))),
+          signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature)))
+        }
+      })
+    });
+    const result = await finishResp.json();
+    if (result.ok) { window.location.href = "/investments"; }
+    else { alert(result.error || "Fingerprint login failed. Use your password."); }
+  } catch (e) {
+    console.error(e);
+    alert("Fingerprint login was cancelled or failed. Use your password instead.");
+  }
+}
+</script>
 </body></html>
