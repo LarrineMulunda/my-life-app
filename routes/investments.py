@@ -802,8 +802,11 @@ def investment_overview():
 
     sav_by_class, broker_totals = {}, {}
     for r in sav_rows:
-        v = float(r["amount"]) if r["type"] == "deposit" else -float(r["amount"])
-        sav_by_class[r["asset_class"]] = sav_by_class.get(r["asset_class"], 0) + v
+        cur  = r.get("currency") or "KES"
+        sign = 1 if r["type"] == "deposit" else -1
+        # Always convert to KES so totals are comparable cross-currency
+        v_kes = _to_kes(float(r["amount"]), cur, fx_rates) * sign
+        sav_by_class[r["asset_class"]] = sav_by_class.get(r["asset_class"], 0) + v_kes
 
     for lot in port["lots"]:
         b    = lot.get("broker", "Unknown") or "Unknown"
