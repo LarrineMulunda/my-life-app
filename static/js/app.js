@@ -49,15 +49,15 @@ async function loadOverview() {
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
   const col = (id, v) => { const el=document.getElementById(id); if(el) el.style.color=v>=0?"var(--green)":"var(--red)"; };
 
-  set("ov-cost",     "KES " + fmt(d.total_cost));
-  set("ov-mkt",      "KES " + fmt(d.total_value));
-  set("ov-gain",     sign(d.total_gain) + "KES " + fmt(Math.abs(d.total_gain)));
-  set("ov-realized", sign(d.total_realized) + "KES " + fmt(Math.abs(d.total_realized)));
+  set("ov-cost",     fmt(d.total_cost));
+  set("ov-mkt",      fmt(d.total_value));
+  set("ov-gain",     sign(d.total_gain) + fmt(Math.abs(d.total_gain)));
+  set("ov-realized", sign(d.total_realized) + fmt(Math.abs(d.total_realized)));
   col("ov-gain",     d.total_gain);
   col("ov-realized", d.total_realized);
 
   const badge = document.getElementById("ov-total-badge");
-  if (badge) badge.textContent = "Total: KES " + fmt(d.total_value);
+  if (badge) badge.textContent = "Total: " + fmt(d.total_value);
 
   const note = document.getElementById("currency-note");
   if (note) note.style.display = d.currency_note ? "block" : "none";
@@ -79,9 +79,9 @@ async function loadOverview() {
               <div class="ac-bar${v.type==="stocks"?" stocks-bar":""}" style="width:${barW}%"></div>
             </div>
             <div class="ac-nums">
-              <span class="ac-value">KES ${fmt(v.value)}</span>
+              <span class="ac-value">${fmt(v.value)}</span>
               <span class="ac-pct">${pct}%</span>
-              ${v.gain !== 0 ? `<span class="ac-gain ${gainCls}">${sign(v.gain)}KES ${fmt(Math.abs(v.gain))}</span>` : ""}
+              ${v.gain !== 0 ? `<span class="ac-gain ${gainCls}">${sign(v.gain)}${fmt(Math.abs(v.gain))}</span>` : ""}
             </div>
           </div>`;
         }).join("")}
@@ -102,7 +102,7 @@ async function loadOverview() {
           <div class="broker-bar" style="width:${(val/total*100).toFixed(1)}%"></div>
         </div>
         <div class="broker-nums">
-          <span class="broker-val">KES ${fmt(val)}</span>
+          <span class="broker-val">${fmt(val)}</span>
           <span class="broker-pct">${(val/total*100).toFixed(1)}%</span>
         </div>
       </div>`).join("");
@@ -264,16 +264,16 @@ function renderHoldingsTable(holdings) {
     const rowCls = hasP ? (pos ? "row-gain" : "row-loss") : "";
     const spark  = _sparklineSVG(h.price_history || []);
     const pnl    = hasP
-      ? `<span class="${pos?"pos":"neg"}">${sign(h.gain_loss)}${cur} ${fmt(Math.abs(h.gain_loss))}</span>`
+      ? `<span class="${pos?"pos":"neg"}">${sign(h.gain_loss)}${fmt(Math.abs(h.gain_loss), cur)}</span>`
       : `<span style="color:var(--text3)">—</span>`;
     const pct    = hasP
       ? `<span class="${pos?"pos":"neg"}">${sign(h.pct_return)}${h.pct_return}%</span>`
       : "—";
     const mktVal = hasP
-      ? `<span style="color:var(--gold2)">${cur} ${fmt(h.market_value)}</span>`
+      ? `<span style="color:var(--gold2)">${fmt(h.market_value, cur)}</span>`
       : `<span style="color:var(--text3)">—</span>`;
     const mktKes = (hasP && h.market_value_kes != null)
-      ? `<span style="color:var(--text2)">KES ${fmt(h.market_value_kes)}</span>`
+      ? `<span style="color:var(--text2)">${fmt(h.market_value_kes)}</span>`
       : "—";
     const mktP   = hasP
       ? `<span style="color:var(--gold2)">${cur} ${h.market_price.toFixed(2)}</span>`
@@ -285,7 +285,7 @@ function renderHoldingsTable(holdings) {
       <td class="num-col">${h.total_shares.toLocaleString()}</td>
       <td class="num-col hide-sm" style="color:var(--text2)">${cur} ${h.avg_cost.toFixed(2)}</td>
       <td class="num-col">${mktP}</td>
-      <td class="num-col hide-sm" style="color:var(--text2)">${cur} ${fmt(h.total_cost)}</td>
+      <td class="num-col hide-sm" style="color:var(--text2)">${fmt(h.total_cost, cur)}</td>
       <td class="num-col">${mktVal}</td>
       <td class="num-col">${pnl}</td>
       <td class="num-col hide-sm">${pct}</td>
@@ -329,9 +329,9 @@ function renderLotsTable(lots) {
       <td class="mo" style="color:var(--gold2)">${cur}</td>
       <td class="mo">${parseFloat(l.shares).toLocaleString()}</td>
       <td class="mo">${cur} ${parseFloat(l.purchase_price).toFixed(2)}</td>
-      <td class="mo gold">${cur} ${fmt(localVal)}</td>
+      <td class="mo gold">${fmt(localVal, cur)}</td>
       <td class="mo" style="color:var(--text2)">
-        ${isForeign ? `KES ${fmt(kesVal)}<span style="font-size:.6rem;color:var(--text3);display:block">@${fxRate} per ${cur}</span>` : `KES ${fmt(kesVal)}`}
+        ${isForeign ? `${fmt(kesVal)}<span style="font-size:.6rem;color:var(--text3);display:block">@${fxRate} per ${cur}</span>` : `${fmt(kesVal)}`}
       </td>
       <td>${l.broker||"—"}</td>
       <td style="display:flex;gap:.3rem">
@@ -716,7 +716,7 @@ async function loadSavings() {
   // Net total in KES
   const net = document.getElementById("stat-net");
   if (net) {
-    net.textContent = "KES " + fmt(data.net_total);
+    net.textContent = fmt(data.net_total);
     net.style.color = data.net_total >= 0 ? "var(--gold2)" : "var(--red)";
   }
 
@@ -725,7 +725,7 @@ async function loadSavings() {
   if (sumEl) sumEl.innerHTML = Object.entries(data.totals_by_class||{}).map(([cls,val])=>`
     <div class="asset-badge">
       <span class="badge-label">${cls}</span>
-      <span class="badge-val ${val>=0?"pos":"neg"}">KES ${fmt(val)}</span>
+      <span class="badge-val ${val>=0?"pos":"neg"}">${fmt(val)}</span>
     </div>`).join("") || `<span style="color:var(--text3);font-size:.85rem">No entries yet.</span>`;
 
   const tbody = document.getElementById("savings-body");
@@ -735,7 +735,7 @@ async function loadSavings() {
     const sign      = e.type === "deposit" ? 1 : -1;
     const amtDisp   = (sign > 0 ? "+" : "−") + cur + " " + fmt(Math.abs(e.amount));
     const kesDisp   = e.is_foreign
-      ? "KES " + fmt(Math.abs(e.amount_kes))
+      ? fmt(Math.abs(e.amount_kes))
       : "—";
     const fxNote    = e.is_foreign
       ? `<span style="font-size:.6rem;color:var(--text3);display:block">@${parseFloat(e.fx_rate_kes).toFixed(4)}</span>`
