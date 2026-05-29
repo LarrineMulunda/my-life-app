@@ -258,18 +258,30 @@ async function loadStocks() {
 function renderLotsTable(lots) {
   const tbody = document.getElementById("lots-body");
   if (!tbody) return;
-  tbody.innerHTML = lots.length ? lots.map(l => `<tr data-ticker="${l.ticker}">
-    <td>${fmtDate(l.date)}</td><td class="wht mo">${l.ticker}</td>
-    <td><span class="hc-exchange-badge">${l.exchange||"NSE"}</span></td>
-    <td class="mo">${l.shares.toLocaleString()}</td>
-    <td class="mo">${l.exchange==="NSE"?"KES":l.exchange==="LSE"?"GBP":l.exchange==="JSE"?"ZAR":"USD"} ${l.purchase_price.toFixed(2)}</td>
-    <td class="mo gold">${fmt(l.shares*l.purchase_price)}</td>
-    <td>${l.broker||"—"}</td>
-    <td style="display:flex;gap:.3rem">
-      <button class="btn-icon" onclick="openEditLot(${JSON.stringify(l).replace(/"/g,'&quot;')})" title="Edit">✎</button>
-      <button class="btn-icon" onclick="deleteLot(${l.id})" title="Delete">✕</button>
-    </td></tr>`).join("") :
-    `<tr><td colspan="8" class="empty">No purchases yet.</td></tr>`;
+  tbody.innerHTML = lots.length ? lots.map(l => {
+    const cur      = l.currency || "KES";
+    const localVal = l.lot_cost_local != null ? l.lot_cost_local : (l.shares * l.purchase_price);
+    const kesVal   = l.lot_cost_kes   != null ? l.lot_cost_kes   : localVal;
+    const fxRate   = l.fx_rate_kes    != null ? l.fx_rate_kes    : 1;
+    const isForeign = cur !== "KES";
+    return `<tr data-ticker="${l.ticker}">
+      <td>${fmtDate(l.date)}</td>
+      <td class="wht mo">${l.ticker}</td>
+      <td><span class="hc-exchange-badge">${l.exchange||"NSE"}</span></td>
+      <td class="mo" style="color:var(--gold2)">${cur}</td>
+      <td class="mo">${parseFloat(l.shares).toLocaleString()}</td>
+      <td class="mo">${cur} ${parseFloat(l.purchase_price).toFixed(2)}</td>
+      <td class="mo gold">${cur} ${fmt(localVal)}</td>
+      <td class="mo" style="color:var(--text2)">
+        ${isForeign ? `KES ${fmt(kesVal)}<span style="font-size:.6rem;color:var(--text3);display:block">@${fxRate} per ${cur}</span>` : `KES ${fmt(kesVal)}`}
+      </td>
+      <td>${l.broker||"—"}</td>
+      <td style="display:flex;gap:.3rem">
+        <button class="btn-icon" onclick="openEditLot(${JSON.stringify(l).replace(/"/g,'&quot;')})" title="Edit">✎</button>
+        <button class="btn-icon" onclick="deleteLot(${l.id})" title="Delete">✕</button>
+      </td></tr>`;
+  }).join("") :
+  `<tr><td colspan="10" class="empty">No purchases yet.</td></tr>`;
 }
 
 function filterLots() {
@@ -387,6 +399,49 @@ async function saveGeminiKey() {
   if (!key) return toast("Enter a key first.","error");
   const d = await api("POST","/api/config",{gemini_api_key:key});
   if (d.ok) { toast("Gemini key saved ✓"); document.getElementById("gemini-key-input").value=""; loadKeyStatus(); }
+}
+
+// ── FX rate management ────────────────────────────────────────────────────────
+async function loadFxRates() {
+  const statusEl = document.getElementById("fx-status");
+  const tableEl  = document.getElementById("fx-table-wrap");
+  if (!statusEl) return;
+
+  const d = await api("GET", "/api/fx-rates");
+  if (!d || !d.rates) { statusEl.textContent = "No rates loaded yet."; return; }
+
+  const asOf = d.as_of && d.as_of !== "—" ? `as of ${d.as_of}` : "defaults (not yet fetched)";
+  statusEl.innerHTML = `<span style="color:var(--text3)">Rates ${asOf}</span>`;
+
+  const CURRENCIES = ["USD","GBP","EUR","ZAR","TZS","UGX","GHS","HKD"];
+  if (tableEl) {
+    tableEl.innerHTML = `<table class="data-table" style="max-width:340px">
+      <thead><tr><th>Currency</th><th>Rate to KES</th></tr></thead>
+      <tbody>${CURRENCIES.filter(c => d.rates[c]).map(c =>
+        `<tr><td class="mo" style="color:var(--gold2)">${c}</td>
+             <td class="mo">1 ${c} = ${d.rates[c].toFixed(4)} KES</td></tr>`
+      ).join("")}</tbody></table>`;
+  }
+}
+
+async function fetchFxRates() {
+  const btn = document.getElementById("fetch-fx-btn");
+  const res = document.getElementById("fx-result");
+  btn.textContent = "Fetching…";
+  btn.disabled = true;
+  const d = await api("POST", "/api/fx-rates/fetch", {});
+  btn.textContent = "↻ Update FX Rates via Gemini";
+  btn.disabled = false;
+  if (d.ok) {
+    res.innerHTML = `<span style="color:var(--green)">✓ Rates updated ${d.date}</span>`;
+    toast("FX rates updated ✓");
+    loadFxRates();
+    loadStocks();   // re-render portfolio with new rates
+    loadOverview();
+  } else {
+    res.innerHTML = `<span style="color:var(--red)">✗ ${d.error}</span>`;
+    toast(d.error || "FX fetch failed", "error");
+  }
 }
 
 // ── Ticker search ──────────────────────────────────────────────────────────

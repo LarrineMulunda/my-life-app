@@ -206,12 +206,22 @@ def _build_portfolio(conn):
     lots     = _fetchall(conn,
         f"SELECT * FROM stock_lots WHERE user_id={ph()} AND shares > 0 ORDER BY date DESC",
         (u,))
-    all_lots = _fetchall(conn,
+    all_lots_raw = _fetchall(conn,
         f"SELECT * FROM stock_lots WHERE user_id={ph()} ORDER BY date DESC",
         (u,))
+    # Enrich each lot with cost in original currency AND in KES
+    all_lots = []
+    for lot in all_lots_raw:
+        cur      = lot.get("currency") or EXCUR.get(lot.get("exchange","NSE"), "KES")
+        lot_cost = float(lot["shares"]) * float(lot["purchase_price"])
+        lot["currency"]          = cur
+        lot["lot_cost_local"]    = round(lot_cost, 2)
+        lot["lot_cost_kes"]      = round(_to_kes(lot_cost, cur, fx_rates), 2)
+        lot["fx_rate_kes"]       = fx_rates.get(cur, 1.0)
+        all_lots.append(lot)
+    # Prices from GLOBAL table — shared by all users
     prices   = _fetchall(conn,
-        f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC",
-        (u,))
+        "SELECT * FROM global_prices ORDER BY date DESC")
     sales    = _fetchall(conn,
         f"SELECT * FROM stock_sales WHERE user_id={ph()} ORDER BY date DESC",
         (u,))
@@ -316,8 +326,7 @@ def _build_portfolio(conn):
         "active_lots":        lots,
         "sales":              sales,
         "price_history":      _fetchall(conn,
-            f"SELECT * FROM stock_prices WHERE user_id={ph()} ORDER BY date DESC",
-            (u,)),
+            "SELECT * FROM global_prices ORDER BY date DESC"),
         "fx_rates":           fx_rates,
         "total_cost":         round(total_cost_kes, 2),    # in KES
         "total_market":       round(total_market_kes, 2),  # in KES
@@ -355,12 +364,22 @@ def get_lots_for_sale():
         """, (uid(),))
     finally:
         conn.close()
+    conn2 = get_db()
+    try:
+        fx = _get_fx_rates(conn2)
+    finally:
+        conn2.close()
     for r in rows:
         r["shares"]          = float(r["shares"])
         r["original_shares"] = float(r["original_shares"] or r["shares"])
         r["purchase_price"]  = float(r["purchase_price"])
         r["lot_value"]       = float(r["lot_value"])
         r["date"]            = str(r["date"])
+        cur = r.get("currency") or EXCUR.get(r.get("exchange","NSE"), "KES")
+        r["currency"]        = cur
+        r["lot_cost_local"]  = round(r["lot_value"], 2)
+        r["lot_cost_kes"]    = round(_to_kes(r["lot_value"], cur, fx), 2)
+        r["fx_rate_kes"]     = fx.get(cur, 1.0)
     return jsonify({"lots": rows})
 
 @bp.route("/api/stocks/lot", methods=["POST"])

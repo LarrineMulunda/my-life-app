@@ -165,8 +165,8 @@
     </div>
     <div class="table-wrap">
       <table class="data-table" id="lots-table">
-        <thead><tr><th>Date</th><th>Ticker</th><th>Exchange</th><th>Shares</th><th>Buy Price</th><th>Lot Value</th><th>Broker</th><th></th></tr></thead>
-        <tbody id="lots-body"><tr><td colspan="8" class="empty">No purchases yet.</td></tr></tbody>
+        <thead><tr><th>Date</th><th>Ticker</th><th>Exch</th><th>Ccy</th><th>Shares</th><th>Buy Price</th><th>Value (Local)</th><th>Value (KES)</th><th>Broker</th><th></th></tr></thead>
+        <tbody id="lots-body"><tr><td colspan="10" class="empty">No purchases yet.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -307,6 +307,16 @@
       <div class="field" style="margin-bottom:1rem"><label>API Key</label><input type="password" id="gemini-key-input" placeholder="AIza…" autocomplete="off"/></div>
       <button class="btn btn-primary" onclick="saveGeminiKey()">Save Key</button>
     </div>
+  </div>
+
+  <!-- FX Rates panel -->
+  <div class="panel" style="margin-top:1.2rem;max-width:520px">
+    <div class="panel-title">FX Exchange Rates → KES</div>
+    <p class="panel-hint">Rates are shared globally for all users. Update once to convert USD/GBP/EUR holdings to KES.</p>
+    <div id="fx-status" style="font-size:.82rem;color:var(--text2);margin-bottom:1rem">Loading…</div>
+    <div id="fx-table-wrap" style="margin-bottom:1rem"></div>
+    <button class="btn btn-primary" id="fetch-fx-btn" onclick="fetchFxRates()">↻ Update FX Rates via Gemini</button>
+    <span id="fx-result" style="font-size:.78rem;font-family:var(--font-mono);margin-left:.8rem"></span>
   </div>
 </div>
 
