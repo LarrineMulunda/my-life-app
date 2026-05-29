@@ -1,6 +1,24 @@
 {% extends "base.html" %}
 {% block title %}Investments{% endblock %}
 
+{% block scripts %}
+<script>
+  // Set today's date on all date inputs
+  const _td = new Date().toISOString().split("T")[0];
+  ["s-date","lot-date","price-date","sale-date"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = _td;
+  });
+  // Boot all modules
+  loadOverview();
+  loadStocks();
+  loadSavings();
+  loadKeyStatus();
+  loadFxRates();
+  loadReview();
+  loadActiveLots();
+</script>
+{% endblock %}
 {% block content %}
 <div class="page-header">
   <div class="page-label">module 01</div>
@@ -234,30 +252,42 @@
   </div>
   <div class="panel">
     <div class="panel-title">Record Sale</div>
-    <p class="panel-hint">Select the lot you are selling from — purchase price fills automatically.</p>
+    <p class="panel-hint">Select the lot you are selling from — purchase price fills automatically. You cannot sell more than the lot holds.</p>
     <div class="form-grid">
       <div class="field field-wide">
-        <label>Lot to Sell From</label>
+        <label>Select Lot to Sell From</label>
         <select id="sale-lot-id" onchange="onLotSelected()">
           <option value="">— choose a lot —</option>
         </select>
       </div>
       <div class="lot-detail-card" id="lot-detail" style="display:none">
-        <div class="lot-detail-grid">
-          <span class="ld-label">Ticker</span><span class="ld-val" id="ld-ticker">—</span>
-          <span class="ld-label">Exchange</span><span class="ld-val" id="ld-exchange">—</span>
-          <span class="ld-label">Available</span><span class="ld-val" id="ld-shares">—</span>
-          <span class="ld-label">Buy Price</span><span class="ld-val" id="ld-price">—</span>
-          <span class="ld-label">Purchase Date</span><span class="ld-val" id="ld-date">—</span>
-        </div>
+        <div class="lot-detail-row"><span>Ticker</span><span id="ld-ticker">—</span></div>
+        <div class="lot-detail-row"><span>Exchange</span><span id="ld-exchange">—</span></div>
+        <div class="lot-detail-row"><span>Purchased</span><span id="ld-date">—</span></div>
+        <div class="lot-detail-row"><span>Purchase Price</span><span id="ld-price">—</span></div>
+        <div class="lot-detail-row"><span>Shares in Lot</span><span id="ld-shares">—</span></div>
+        <div class="lot-detail-row"><span>Original Shares</span><span id="ld-orig">—</span></div>
+        <div class="lot-detail-row"><span>Lot Value</span><span id="ld-value">—</span></div>
       </div>
-      <div class="field"><label>Shares to Sell</label><input type="number" id="sale-shares" step="any" min="0.001" placeholder="0"/></div>
-      <div class="field"><label>Sale Price per Share</label><input type="number" id="sale-price" step="any" min="0.001" placeholder="0.00"/></div>
-      <div class="field"><label>Date</label><input type="date" id="sale-date"/></div>
-      <div class="field"><label>Broker</label><input type="text" id="sale-broker" placeholder="Optional"/></div>
+      <div class="field">
+        <label>Shares to Sell</label>
+        <input type="number" id="sale-shares" placeholder="e.g. 50" step="any" min="0.001" oninput="updateSalePreview()"/>
+        <div id="sale-shares-max" style="font-size:.72rem;color:var(--text3);margin-top:.25rem"></div>
+      </div>
+      <div class="field">
+        <label>Purchase Price (auto-filled)</label>
+        <input type="number" id="sale-buy-price" step="any" readonly style="background:var(--bg3);color:var(--text2);cursor:not-allowed"/>
+      </div>
+      <div class="field">
+        <label>Sale Price per Share</label>
+        <input type="number" id="sale-price" placeholder="0.00" step="any" min="0.001" oninput="updateSalePreview()"/>
+      </div>
+      <div class="field"><label>Date Sold</label><input type="date" id="sale-date"/></div>
+      <div class="field"><label>Broker (optional)</label><input type="text" id="sale-broker" placeholder="Optional"/></div>
+      <div class="field"><label>Note (optional)</label><input type="text" id="sale-note" placeholder="Optional"/></div>
     </div>
+    <div id="sale-preview" style="font-size:.9rem;margin:.6rem 0 .9rem;font-family:var(--font-mono)"></div>
     <button class="btn btn-primary" onclick="recordSale()">Record Sale</button>
-    <span id="sale-result" style="margin-left:1rem;font-size:.82rem;font-family:var(--font-mono)"></span>
   </div>
   <div class="panel">
     <div class="panel-title" style="justify-content:space-between">
