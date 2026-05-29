@@ -361,16 +361,28 @@ async function fetchPricesAI() {
   btn.disabled = true; btn.textContent = "Fetching…";
   st.textContent = "Calling Gemini AI with Google Search…"; st.className="fetch-status";
   try {
+    // Auto-fetch FX rates first if they look stale (empty global_fx table)
+    const fxCheck = await api("GET", "/api/fx-rates");
+    const fxEmpty = !fxCheck.rates || Object.keys(fxCheck.rates).filter(k=>k!=="KES").length === 0;
+    if (fxEmpty) {
+      st.textContent = "Fetching FX rates first…";
+      await api("POST", "/api/fx-rates/fetch", {});
+    }
+
     const d = await api("POST","/api/stocks/fetch-prices",{});
     if (d.ok) {
-      const names = d.saved.map(s=>`${s.ticker} → ${s.price}`).join(", ");
-      st.textContent = `✓ ${d.saved.length} prices updated (${d.date}): ${names}`;
+      const skipped = d.skipped?.length ? ` · ${d.skipped.length} already up-to-date` : "";
+      const names   = d.saved.map(s=>`${s.ticker} ${s.price}`).join(" · ");
+      st.textContent = `✓ ${d.saved.length} updated (${d.date})${skipped}`;
+      if (names) st.textContent += `: ${names}`;
       st.className = "fetch-status ok";
       toast(`${d.saved.length} price${d.saved.length!==1?"s":""} updated ✓`);
-      loadStocks(); loadOverview();
+      loadStocks(); loadOverview(); loadFxRates();
     } else if (d.error?.includes("API key")) {
       toast("Add your Gemini API key in Settings first.", "error");
       switchTab("settings");
+    } else {
+      st.textContent = `✗ ${d.error}`; st.className="fetch-status err";
     }
   } catch(e) { st.textContent="Network error"; st.className="fetch-status err"; toast("Network error","error"); }
   finally { btn.disabled=false; btn.textContent="Fetch Current Prices"; }
@@ -425,21 +437,38 @@ async function loadFxRates() {
 }
 
 async function fetchFxRates() {
-  const btn = document.getElementById("fetch-fx-btn");
-  const res = document.getElementById("fx-result");
-  btn.textContent = "Fetching…";
-  btn.disabled = true;
+  // Update both buttons (one on Stocks tab, one on Settings tab)
+  ["fetch-fx-btn","fetch-fx-btn2"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent="Fetching FX…"; el.disabled=true; }
+  });
+  const res     = document.getElementById("fx-result");
+  const inlineEl= document.getElementById("fx-inline-status");
+
   const d = await api("POST", "/api/fx-rates/fetch", {});
-  btn.textContent = "↻ Update FX Rates via Gemini";
-  btn.disabled = false;
+
+  ["fetch-fx-btn","fetch-fx-btn2"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = id==="fetch-fx-btn2" ? "↻ Update FX Rates" : "↻ Update FX Rates via Gemini";
+      el.disabled = false;
+    }
+  });
+
   if (d.ok) {
-    res.innerHTML = `<span style="color:var(--green)">✓ Rates updated ${d.date}</span>`;
+    if (res) res.innerHTML = `<span style="color:var(--green)">✓ Rates updated ${d.date}</span>`;
+    if (inlineEl) {
+      const ratesList = Object.entries(d.rates||{})
+        .filter(([k])=>k!=="KES").map(([k,v])=>`1 ${k} = ${parseFloat(v).toFixed(2)} KES`).join(" · ");
+      inlineEl.innerHTML = `<span style="color:var(--green)">✓ FX updated ${d.date}</span> · ${ratesList}`;
+    }
     toast("FX rates updated ✓");
     loadFxRates();
-    loadStocks();   // re-render portfolio with new rates
+    loadStocks();
     loadOverview();
   } else {
-    res.innerHTML = `<span style="color:var(--red)">✗ ${d.error}</span>`;
+    if (res) res.innerHTML = `<span style="color:var(--red)">✗ ${d.error}</span>`;
+    if (inlineEl) inlineEl.innerHTML = `<span style="color:var(--red)">✗ ${d.error||"FX fetch failed"}</span>`;
     toast(d.error || "FX fetch failed", "error");
   }
 }

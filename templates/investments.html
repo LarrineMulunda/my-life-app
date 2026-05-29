@@ -71,8 +71,10 @@
     <p class="panel-hint">Uses Gemini AI + Google Search. Also auto-saves a portfolio snapshot.</p>
     <div class="fetch-row">
       <button class="btn btn-primary" id="fetch-btn" onclick="fetchPricesAI()">Fetch Current Prices</button>
+      <button class="btn btn-ghost" id="fetch-fx-btn2" onclick="fetchFxRates()" style="margin-left:.5rem" title="Update USD/GBP/EUR → KES rates">↻ Update FX Rates</button>
       <span id="fetch-status" class="fetch-status"></span>
     </div>
+    <div id="fx-inline-status" style="font-size:.75rem;font-family:var(--font-mono);color:var(--text3);margin-top:.4rem"></div>
   </div>
 
   <!-- Record purchase -->
