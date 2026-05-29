@@ -122,22 +122,40 @@ def get_tickers():
 
 # ── Savings ───────────────────────────────────────────────────────────────────
 
+
 @bp.route("/api/savings")
 @approved_required
 def get_savings():
     conn = get_db()
     try:
-        rows = _fetchall(conn,
+        rows     = _fetchall(conn,
             f"SELECT * FROM savings WHERE user_id={p()} ORDER BY date DESC",
             (uid(),))
+        fx_rates = _get_fx_rates(conn)
     finally:
         conn.close()
-    totals, net = {}, 0
+
+    totals_kes, net_kes = {}, 0.0
     for e in rows:
-        v = float(e["amount"]) if e["type"] == "deposit" else -float(e["amount"])
-        totals[e["asset_class"]] = totals.get(e["asset_class"], 0) + v
-        net += v
-    return jsonify({"entries": rows, "totals_by_class": totals, "net_total": net})
+        cur     = e.get("currency") or "KES"
+        sign    = 1 if e["type"] == "deposit" else -1
+        amt_kes = _to_kes(float(e["amount"]), cur, fx_rates) * sign
+
+        e["currency"]    = cur
+        e["amount_kes"]  = round(amt_kes, 2)
+        e["fx_rate_kes"] = fx_rates.get(cur, 1.0)
+        e["is_foreign"]  = (cur != "KES")
+
+        totals_kes[e["asset_class"]] = (
+            totals_kes.get(e["asset_class"], 0.0) + amt_kes)
+        net_kes += amt_kes
+
+    return jsonify({
+        "entries":         rows,
+        "totals_by_class": {k: round(v, 2) for k, v in totals_kes.items()},
+        "net_total":       round(net_kes, 2),
+        "fx_rates":        fx_rates,
+    })
 
 @bp.route("/api/savings", methods=["POST"])
 @approved_required
@@ -788,8 +806,12 @@ def investment_overview():
         sav_by_class[r["asset_class"]] = sav_by_class.get(r["asset_class"], 0) + v
 
     for lot in port["lots"]:
-        b = lot.get("broker", "Unknown") or "Unknown"
-        broker_totals[b] = broker_totals.get(b, 0) + float(lot["shares"]) * float(lot["purchase_price"])
+        b    = lot.get("broker", "Unknown") or "Unknown"
+        cur  = lot.get("currency") or EXCUR.get(lot.get("exchange","NSE"), "KES")
+        cost = float(lot["shares"]) * float(lot["purchase_price"])
+        # Convert to KES for a meaningful cross-currency total
+        cost_kes = _to_kes(cost, cur, port.get("fx_rates", {}))
+        broker_totals[b] = broker_totals.get(b, 0) + cost_kes
 
     stock_by_exch = {}
     for h in port["holdings"]:

@@ -49,14 +49,16 @@ async function loadOverview() {
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
   const col = (id, v) => { const el=document.getElementById(id); if(el) el.style.color=v>=0?"var(--green)":"var(--red)"; };
 
-  set("ov-cost",     fmt(d.total_cost));
-  set("ov-mkt",      fmt(d.total_value));
-  set("ov-gain",     sign(d.total_gain) + fmt(d.total_gain));
-  set("ov-realized", sign(d.total_realized) + fmt(d.total_realized));
+  set("ov-cost",     "KES " + fmt(d.total_cost));
+  set("ov-mkt",      "KES " + fmt(d.total_value));
+  set("ov-gain",     sign(d.total_gain) + "KES " + fmt(Math.abs(d.total_gain)));
+  set("ov-realized", sign(d.total_realized) + "KES " + fmt(Math.abs(d.total_realized)));
   col("ov-gain",     d.total_gain);
   col("ov-realized", d.total_realized);
 
-  // Currency note
+  const badge = document.getElementById("ov-total-badge");
+  if (badge) badge.textContent = "Total: KES " + fmt(d.total_value);
+
   const note = document.getElementById("currency-note");
   if (note) note.style.display = d.currency_note ? "block" : "none";
 
@@ -64,36 +66,48 @@ async function loadOverview() {
   const container = document.getElementById("asset-class-breakdown");
   if (container) {
     const entries = Object.entries(d.asset_summary || {}).sort((a,b) => b[1].value - a[1].value);
-    const maxVal  = Math.max(...entries.map(([,v]) => v.value), 1);
-    container.innerHTML = entries.map(([cls, v]) => `
-      <div class="ac-row">
-        <div class="ac-name">${cls}</div>
-        <div class="ac-bar-wrap"><div class="ac-bar ${v.type==="stocks"?"stocks-bar":""}" style="width:${(v.value/maxVal*100).toFixed(1)}%"></div></div>
-        <div class="ac-value">${fmt(v.value, v.currency||"KES")}</div>
-        <div class="ac-pct">${v.pct_total}%</div>
-        <span class="ac-gain ${v.gain>0?"pos":v.gain<0?"neg":"zero"}">${v.gain!==0?sign(v.gain)+fmt(v.gain,v.currency||"KES"):"—"}</span>
-      </div>`).join("") || `<p class="empty-msg">No assets recorded yet.</p>`;
+    const total   = entries.reduce((s,[,v]) => s + v.value, 0) || 1;
+    container.innerHTML = entries.length ? `
+      <div class="ac-table">
+        ${entries.map(([cls, v]) => {
+          const pct     = (v.value / total * 100).toFixed(1);
+          const barW    = Math.max(2, (v.value / total * 100)).toFixed(1);
+          const gainCls = v.gain > 0 ? "pos" : v.gain < 0 ? "neg" : "";
+          return `<div class="ac-row">
+            <div class="ac-name">${cls}</div>
+            <div class="ac-bar-wrap">
+              <div class="ac-bar${v.type==="stocks"?" stocks-bar":""}" style="width:${barW}%"></div>
+            </div>
+            <div class="ac-nums">
+              <span class="ac-value">KES ${fmt(v.value)}</span>
+              <span class="ac-pct">${pct}%</span>
+              ${v.gain !== 0 ? `<span class="ac-gain ${gainCls}">${sign(v.gain)}KES ${fmt(Math.abs(v.gain))}</span>` : ""}
+            </div>
+          </div>`;
+        }).join("")}
+      </div>` : `<p class="empty-msg">No assets recorded yet.</p>`;
   }
 
-  // Broker breakdown
+  // Broker breakdown — all in KES
   const brokers = d.broker_totals || {};
   const bp = document.getElementById("broker-panel");
   const bb = document.getElementById("broker-breakdown");
   if (bp && bb && Object.keys(brokers).length) {
     bp.style.display = "block";
-    const total = Object.values(brokers).reduce((a,b) => a+b, 0);
+    const total = Object.values(brokers).reduce((a,b) => a+b, 0) || 1;
     bb.innerHTML = Object.entries(brokers).map(([broker, val]) => `
-      <div style="display:flex;align-items:center;gap:.8rem;padding:.55rem .3rem;border-bottom:1px solid var(--border)">
-        <div style="flex:0 0 140px;font-size:.84rem;color:var(--text)">${broker}</div>
-        <div style="flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
-          <div style="width:${(val/total*100).toFixed(1)}%;height:100%;background:var(--gold);border-radius:2px"></div>
+      <div class="broker-row">
+        <div class="broker-name">${broker}</div>
+        <div class="broker-bar-wrap">
+          <div class="broker-bar" style="width:${(val/total*100).toFixed(1)}%"></div>
         </div>
-        <div style="flex:0 0 110px;text-align:right;font-family:var(--font-mono);font-size:.78rem;color:var(--gold2)">${fmt(val)}</div>
-        <div style="flex:0 0 36px;text-align:right;font-family:var(--font-mono);font-size:.68rem;color:var(--text3)">${(val/total*100).toFixed(1)}%</div>
+        <div class="broker-nums">
+          <span class="broker-val">KES ${fmt(val)}</span>
+          <span class="broker-pct">${(val/total*100).toFixed(1)}%</span>
+        </div>
       </div>`).join("");
   }
 
-  // Net worth chart
   await loadNetWorthChart();
 }
 
@@ -187,35 +201,11 @@ async function loadStocks() {
   set("p-pct",  sign(d.portfolio_pct) + d.portfolio_pct + "%");
   col("p-gain", d.total_gain); col("p-pct", d.portfolio_pct);
 
-  // Holdings cards with sparklines
-  const grid = document.getElementById("holdings-cards");
-  if (grid) grid.innerHTML = (d.holdings || []).map(h => {
-    const hasP = h.market_price !== null, pos = h.gain_loss >= 0;
-    const cls  = hasP ? (pos?"gain":"loss") : "";
-    const cur  = h.currency || "KES";
-    const spark = _sparklineSVG(h.price_history);
-    return `<div class="holding-card ${cls}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div><span class="hc-ticker">${h.ticker}</span><span class="hc-exchange-badge">${h.exchange}</span></div>
-        <div title="Price history">${spark}</div>
-      </div>
-      <div class="hc-shares">${h.total_shares.toLocaleString()} shares · ${h.lots.length} lot${h.lots.length!==1?"s":""}</div>
-      <div class="hc-row"><span class="hl">Avg cost / share</span><span class="hr">${cur} ${h.avg_cost.toFixed(2)}</span></div>
-      <div class="hc-row"><span class="hl">Total cost basis</span><span class="hr">${fmt(h.total_cost,cur)}</span></div>
-      ${hasP ? `
-      <div class="hc-row"><span class="hl">Market price</span><span class="hr" style="color:var(--gold2)">${cur} ${h.market_price.toFixed(2)}</span></div>
-      <div class="hc-row"><span class="hl">Market value</span><span class="hr" style="color:var(--gold2)">${fmt(h.market_value,cur)}</span></div>
-      <div class="hc-divider"></div>
-      <div class="hc-gain-row">
-        <span class="hc-gain-val ${pos?"pos":"neg"}">${sign(h.gain_loss)}${fmt(h.gain_loss,cur)}</span>
-        <span class="hc-pct ${pos?"pos":"neg"}">${sign(h.pct_return)}${h.pct_return}%</span>
-      </div>
-      <div class="hc-price-date">Price as of ${fmtDate(h.price_date)}</div>` :
-      `<div style="font-size:.78rem;color:var(--text3);font-style:italic;margin-top:.7rem">No market price yet</div>`}
-      ${h.realized?.realized_gain ? `<div style="font-size:.74rem;color:var(--text2);margin-top:.5rem;font-family:var(--font-mono)">Realized: ${sign(h.realized.realized_gain)}${fmt(h.realized.realized_gain,cur)}</div>` : ""}
-    </div>`;
-  }).join("") || "";
+  // Holdings table
+  _holdings = d.holdings || [];
+  renderHoldingsTable(_holdings);
 
+  // Ticker datalist
   // Ticker datalist
   const dl = document.getElementById("ticker-list");
   if (dl) dl.innerHTML = [...new Set((d.lots||[]).map(l=>l.ticker))].map(t=>`<option value="${t}">`).join("");
@@ -253,6 +243,74 @@ async function loadStocks() {
       <td>${s.broker||"—"}</td>
       <td><button class="btn-icon" onclick="deleteSale(${s.id})">✕</button></td></tr>`;
   }).join("") : `<tr><td colspan="9" class="empty">No sales recorded yet.</td></tr>`;
+}
+
+
+// ── Holdings table (replaces cards) ─────────────────────────────────────────
+let _holdings = [];
+
+function renderHoldingsTable(holdings) {
+  const tbody = document.getElementById("holdings-body");
+  if (!tbody) return;
+  if (!holdings.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="empty">No holdings yet. Add a purchase lot to begin.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = holdings.map(h => {
+    const hasP = h.market_price !== null && h.market_price !== undefined;
+    const cur  = h.currency || "KES";
+    const pos  = hasP && h.gain_loss >= 0;
+    const neg  = hasP && h.gain_loss < 0;
+    const rowCls = hasP ? (pos ? "row-gain" : "row-loss") : "";
+    const spark  = _sparklineSVG(h.price_history || []);
+    const pnl    = hasP
+      ? `<span class="${pos?"pos":"neg"}">${sign(h.gain_loss)}${cur} ${fmt(Math.abs(h.gain_loss))}</span>`
+      : `<span style="color:var(--text3)">—</span>`;
+    const pct    = hasP
+      ? `<span class="${pos?"pos":"neg"}">${sign(h.pct_return)}${h.pct_return}%</span>`
+      : "—";
+    const mktVal = hasP
+      ? `<span style="color:var(--gold2)">${cur} ${fmt(h.market_value)}</span>`
+      : `<span style="color:var(--text3)">—</span>`;
+    const mktKes = (hasP && h.market_value_kes != null)
+      ? `<span style="color:var(--text2)">KES ${fmt(h.market_value_kes)}</span>`
+      : "—";
+    const mktP   = hasP
+      ? `<span style="color:var(--gold2)">${cur} ${h.market_price.toFixed(2)}</span>`
+      : `<span style="color:var(--text3);font-size:.72rem">no price</span>`;
+
+    return `<tr class="${rowCls}" style="cursor:default">
+      <td><span class="tk-badge">${h.ticker}</span></td>
+      <td class="hide-xs"><span class="hc-exchange-badge">${h.exchange}</span></td>
+      <td class="num-col">${h.total_shares.toLocaleString()}</td>
+      <td class="num-col hide-sm" style="color:var(--text2)">${cur} ${h.avg_cost.toFixed(2)}</td>
+      <td class="num-col">${mktP}</td>
+      <td class="num-col hide-sm" style="color:var(--text2)">${cur} ${fmt(h.total_cost)}</td>
+      <td class="num-col">${mktVal}</td>
+      <td class="num-col">${pnl}</td>
+      <td class="num-col hide-sm">${pct}</td>
+      <td class="num-col hide-sm">${mktKes}</td>
+      <td class="hide-sm">${spark}</td>
+    </tr>`;
+  }).join("");
+}
+
+function filterHoldings() {
+  const q = (document.getElementById("holdings-search")?.value || "").toLowerCase();
+  renderHoldingsTable(q ? _holdings.filter(h =>
+    h.ticker.toLowerCase().includes(q) || (h.exchange||"").toLowerCase().includes(q)
+  ) : _holdings);
+}
+
+function sortHoldings() {
+  const s = document.getElementById("holdings-sort")?.value || "value_desc";
+  const arr = [..._holdings];
+  if      (s === "ticker")       arr.sort((a,b) => a.ticker.localeCompare(b.ticker));
+  else if (s === "value_desc")   arr.sort((a,b) => (b.market_value_kes||b.market_value||b.total_cost) - (a.market_value_kes||a.market_value||a.total_cost));
+  else if (s === "gain_pct_desc") arr.sort((a,b) => (b.pct_return||0) - (a.pct_return||0));
+  else if (s === "gain_abs_desc") arr.sort((a,b) => (b.gain_loss||0) - (a.gain_loss||0));
+  else if (s === "cost_desc")    arr.sort((a,b) => b.total_cost - a.total_cost);
+  renderHoldingsTable(arr);
 }
 
 function renderLotsTable(lots) {
@@ -645,28 +703,59 @@ async function deleteSale(id) {
 /* ══════════════════════════════════════════════════════════════════════════
    OTHER SAVINGS
 ══════════════════════════════════════════════════════════════════════════ */
+
+// Update amount label to show selected currency
+function updateAmountLabel(selectId, labelId) {
+  const cur = document.getElementById(selectId)?.value || "KES";
+  const lbl = document.getElementById(labelId);
+  if (lbl) lbl.textContent = cur === "KES" ? "Amount (KES)" : `Amount (${cur})`;
+}
 async function loadSavings() {
   const data = await api("GET","/api/savings");
+
+  // Net total in KES
   const net = document.getElementById("stat-net");
-  if (net) { net.textContent=fmt(data.net_total); net.style.color=data.net_total>=0?"var(--gold2)":"var(--red)"; }
+  if (net) {
+    net.textContent = "KES " + fmt(data.net_total);
+    net.style.color = data.net_total >= 0 ? "var(--gold2)" : "var(--red)";
+  }
+
+  // Asset class summary badges (all in KES)
   const sumEl = document.getElementById("asset-summary");
   if (sumEl) sumEl.innerHTML = Object.entries(data.totals_by_class||{}).map(([cls,val])=>`
     <div class="asset-badge">
       <span class="badge-label">${cls}</span>
-      <span class="badge-val ${val>=0?"pos":"neg"}">${fmt(val)}</span>
+      <span class="badge-val ${val>=0?"pos":"neg"}">KES ${fmt(val)}</span>
     </div>`).join("") || `<span style="color:var(--text3);font-size:.85rem">No entries yet.</span>`;
+
   const tbody = document.getElementById("savings-body");
   if (!tbody) return;
-  tbody.innerHTML = (data.entries||[]).length ? data.entries.map(e=>`<tr>
-    <td>${fmtDate(e.date)}</td><td class="wht">${e.label}</td>
-    <td><span class="asset-badge" style="display:inline-flex;padding:.15rem .55rem">${e.asset_class}</span></td>
-    <td class="${e.type}">${e.type==="deposit"?"↑ Deposit":"↓ Withdrawal"}</td>
-    <td class="mo" style="color:${e.type==="deposit"?"var(--green)":"var(--red)"}">${e.type==="deposit"?"+":"-"}${fmt(e.amount)}</td>
-    <td>${e.note||"—"}</td>
-    <td style="display:flex;gap:.3rem">
-      <button class="btn-icon" onclick="openEditSaving(${JSON.stringify(e).replace(/"/g,'&quot;')})" title="Edit">✎</button>
-      <button class="btn-icon" onclick="deleteSaving(${e.id})" title="Delete">✕</button>
-    </td></tr>`).join("") : `<tr><td colspan="7" class="empty">No entries yet.</td></tr>`;
+  tbody.innerHTML = (data.entries||[]).length ? data.entries.map(e => {
+    const cur       = e.currency || "KES";
+    const sign      = e.type === "deposit" ? 1 : -1;
+    const amtDisp   = (sign > 0 ? "+" : "−") + cur + " " + fmt(Math.abs(e.amount));
+    const kesDisp   = e.is_foreign
+      ? "KES " + fmt(Math.abs(e.amount_kes))
+      : "—";
+    const fxNote    = e.is_foreign
+      ? `<span style="font-size:.6rem;color:var(--text3);display:block">@${parseFloat(e.fx_rate_kes).toFixed(4)}</span>`
+      : "";
+    const amtColor  = e.type === "deposit" ? "var(--green)" : "var(--red)";
+
+    return `<tr>
+      <td>${fmtDate(e.date)}</td>
+      <td class="wht">${e.label}</td>
+      <td><span class="asset-badge" style="display:inline-flex;padding:.15rem .55rem">${e.asset_class}</span></td>
+      <td class="${e.type}">${e.type==="deposit"?"↑ Deposit":"↓ Withdrawal"}</td>
+      <td class="mo" style="color:var(--gold2)">${cur}</td>
+      <td class="mo" style="color:${amtColor}">${amtDisp}</td>
+      <td class="mo" style="color:var(--text2)">${kesDisp}${fxNote}</td>
+      <td>${e.note||"—"}</td>
+      <td style="display:flex;gap:.3rem">
+        <button class="btn-icon" onclick="openEditSaving(${JSON.stringify(e).replace(/"/g,'&quot;')})" title="Edit">✎</button>
+        <button class="btn-icon" onclick="deleteSaving(${e.id})" title="Delete">✕</button>
+      </td></tr>`;
+  }).join("") : `<tr><td colspan="9" class="empty">No entries yet.</td></tr>`;
 }
 
 async function addSaving() {
@@ -688,24 +777,28 @@ async function addSaving() {
 }
 
 function openEditSaving(entry) {
-  document.getElementById("es-id").value     = entry.id;
-  document.getElementById("es-label").value  = entry.label;
-  document.getElementById("es-class").value  = entry.asset_class;
-  document.getElementById("es-amount").value = entry.amount;
-  document.getElementById("es-type").value   = entry.type;
-  document.getElementById("es-date").value   = entry.date;
-  document.getElementById("es-note").value   = entry.note||"";
+  document.getElementById("es-id").value       = entry.id;
+  document.getElementById("es-label").value    = entry.label;
+  document.getElementById("es-class").value    = entry.asset_class;
+  document.getElementById("es-amount").value   = entry.amount;
+  document.getElementById("es-type").value     = entry.type;
+  document.getElementById("es-date").value     = entry.date;
+  document.getElementById("es-note").value     = entry.note||"";
+  const cur = entry.currency || "KES";
+  const esCur = document.getElementById("es-currency");
+  if (esCur) { esCur.value = cur; updateAmountLabel("es-currency","es-amount-label"); }
   document.getElementById("edit-saving-modal").style.display="flex";
 }
 async function saveSavingEdit() {
   const id = document.getElementById("es-id").value;
   const payload = {
-    label: document.getElementById("es-label").value.trim(),
-    asset_class: document.getElementById("es-class").value,
-    amount: document.getElementById("es-amount").value,
-    type:   document.getElementById("es-type").value,
-    date:   document.getElementById("es-date").value,
-    note:   document.getElementById("es-note").value.trim()
+    label:      document.getElementById("es-label").value.trim(),
+    asset_class:document.getElementById("es-class").value,
+    amount:     document.getElementById("es-amount").value,
+    type:       document.getElementById("es-type").value,
+    date:       document.getElementById("es-date").value,
+    note:       document.getElementById("es-note").value.trim(),
+    currency:   document.getElementById("es-currency")?.value || "KES",
   };
   const d = await api("PUT",`/api/savings/${id}`,payload);
   if (d.ok) { closeModal("edit-saving-modal"); toast("Entry updated ✓"); loadSavings(); loadOverview(); }

@@ -1,80 +1,121 @@
 {% extends "base.html" %}
 {% block title %}Investments{% endblock %}
+
 {% block content %}
 <div class="page-header">
   <div class="page-label">module 01</div>
   <h1 class="page-title">Investments</h1>
 </div>
 
-<div class="tab-bar">
+<div class="tab-bar" id="inv-tab-bar">
   <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
   <button class="tab-btn" onclick="switchTab('stocks')">Stocks</button>
-  <button class="tab-btn" onclick="switchTab('realized')">Realized Gains</button>
+  <button class="tab-btn" onclick="switchTab('realized')">Realized</button>
   <button class="tab-btn" onclick="switchTab('other')">Other Assets</button>
-  <button class="tab-btn" onclick="switchTab('review')">Friday Review</button>
+  <button class="tab-btn" onclick="switchTab('review')">Review</button>
   <button class="tab-btn" onclick="switchTab('settings')">Settings</button>
 </div>
 
 <!-- ══ OVERVIEW ══ -->
 <div class="tab-pane active" id="tab-overview">
-  <div class="stat-row" style="margin-top:1.5rem">
-    <div class="stat-card"><div class="stat-label">Total Cost Basis</div><div class="stat-value" id="ov-cost">—</div></div>
-    <div class="stat-card"><div class="stat-label">Total Market Value</div><div class="stat-value" id="ov-mkt">—</div></div>
-    <div class="stat-card"><div class="stat-label">Unrealized Gain / Loss</div><div class="stat-value" id="ov-gain">—</div></div>
-    <div class="stat-card"><div class="stat-label">Realized Gain / Loss</div><div class="stat-value" id="ov-realized">—</div></div>
+  <div class="kpi-grid" style="margin-top:1.2rem">
+    <div class="kpi-card"><div class="kpi-label">Cost Basis</div><div class="kpi-val" id="ov-cost">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Market Value</div><div class="kpi-val" id="ov-mkt">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Unrealized P&amp;L</div><div class="kpi-val" id="ov-gain">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Realized P&amp;L</div><div class="kpi-val" id="ov-realized">—</div></div>
   </div>
 
   <div id="currency-note" class="currency-note" style="display:none">
-    ★ Non-KES positions shown in original currency. Cross-currency total is approximate.
+    ★ All values converted to KES using latest FX rates.
   </div>
 
   <!-- Net worth chart -->
   <div class="panel">
     <div class="panel-title" style="justify-content:space-between">
       <span>Net Worth Over Time</span>
-      <button class="btn btn-ghost btn-sm" onclick="takeSnapshot()">+ Save Today's Snapshot</button>
+      <button class="btn btn-ghost btn-sm" onclick="takeSnapshot()">+ Snapshot</button>
     </div>
-    <div id="chart-empty" style="display:none"><p class="empty-msg">No snapshots yet — prices must be fetched at least once to start tracking.</p></div>
-    <div id="chart-wrap" style="position:relative;height:220px"><canvas id="net-worth-chart"></canvas></div>
+    <div id="chart-empty" style="display:none"><p class="empty-msg">No snapshots yet — fetch prices once to begin tracking.</p></div>
+    <div id="chart-wrap" style="position:relative;height:200px"><canvas id="net-worth-chart"></canvas></div>
   </div>
 
   <!-- Asset class breakdown -->
   <div class="panel">
     <div class="panel-title" style="justify-content:space-between">
-      <span>Portfolio by Asset Class</span>
-      <a href="/api/export/lots.csv" class="btn btn-ghost btn-sm" download>↓ Export Lots</a>
+      <span>By Asset Class</span>
+      <span id="ov-total-badge" style="font-family:var(--font-mono);font-size:.72rem;color:var(--gold2)"></span>
     </div>
     <div id="asset-class-breakdown"><p class="empty-msg">Loading…</p></div>
   </div>
 
   <!-- Broker breakdown -->
   <div class="panel" id="broker-panel" style="display:none">
-    <div class="panel-title">By Broker</div>
+    <div class="panel-title">By Broker <span style="font-size:.68rem;color:var(--text3);margin-left:.3rem">cost basis in KES</span></div>
     <div id="broker-breakdown"></div>
   </div>
 </div>
 
 <!-- ══ STOCKS ══ -->
 <div class="tab-pane" id="tab-stocks">
-  <div class="stat-row" style="margin-top:1.5rem">
-    <div class="stat-card"><div class="stat-label">Stock Cost Basis</div><div class="stat-value" id="p-cost">—</div></div>
-    <div class="stat-card"><div class="stat-label">Market Value</div><div class="stat-value" id="p-mkt">—</div></div>
-    <div class="stat-card"><div class="stat-label">Gain / Loss</div><div class="stat-value" id="p-gain">—</div></div>
-    <div class="stat-card"><div class="stat-label">Return</div><div class="stat-value" id="p-pct">—</div></div>
+  <div class="kpi-grid" style="margin-top:1.2rem">
+    <div class="kpi-card"><div class="kpi-label">Cost Basis</div><div class="kpi-val" id="p-cost">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Market Value</div><div class="kpi-val" id="p-mkt">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Gain / Loss</div><div class="kpi-val" id="p-gain">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Return</div><div class="kpi-val" id="p-pct">—</div></div>
   </div>
 
-  <div id="holdings-cards" class="holdings-grid"></div>
+  <!-- Holdings table (replaces cards) -->
+  <div class="panel" style="padding:0">
+    <div class="panel-title" style="padding:1rem 1.2rem .8rem;justify-content:space-between">
+      <span>Holdings</span>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <input type="text" id="holdings-search" placeholder="Filter…"
+               style="font-size:.75rem;padding:.28rem .6rem;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);width:110px"
+               oninput="filterHoldings()"/>
+        <select id="holdings-sort" onchange="sortHoldings()"
+                style="font-size:.75rem;padding:.28rem .5rem;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text)">
+          <option value="ticker">Ticker</option>
+          <option value="value_desc" selected>Value ↓</option>
+          <option value="gain_pct_desc">Return ↓</option>
+          <option value="gain_abs_desc">Gain ↓</option>
+          <option value="cost_desc">Cost ↓</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table holdings-tbl" id="holdings-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th class="hide-xs">Exch</th>
+            <th class="num-col">Shares</th>
+            <th class="num-col hide-sm">Avg Cost</th>
+            <th class="num-col">Mkt Price</th>
+            <th class="num-col hide-sm">Cost Basis</th>
+            <th class="num-col">Mkt Value</th>
+            <th class="num-col">P&amp;L</th>
+            <th class="num-col hide-sm">%</th>
+            <th class="num-col hide-sm">KES Value</th>
+            <th class="hide-sm">Trend</th>
+          </tr>
+        </thead>
+        <tbody id="holdings-body">
+          <tr><td colspan="11" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 
-  <!-- Gemini fetch -->
+  <!-- Fetch + FX -->
   <div class="panel gemini-panel">
     <div class="panel-title">Fetch End-of-Day Prices <span class="ai-badge">✦ AI</span></div>
-    <p class="panel-hint">Uses Gemini AI + Google Search. Also auto-saves a portfolio snapshot.</p>
-    <div class="fetch-row">
+    <p class="panel-hint">Uses Gemini AI + Google Search. Fetches FX rates automatically if not yet done today.</p>
+    <div class="fetch-row" style="flex-wrap:wrap;gap:.5rem">
       <button class="btn btn-primary" id="fetch-btn" onclick="fetchPricesAI()">Fetch Current Prices</button>
-      <button class="btn btn-ghost" id="fetch-fx-btn2" onclick="fetchFxRates()" style="margin-left:.5rem" title="Update USD/GBP/EUR → KES rates">↻ Update FX Rates</button>
-      <span id="fetch-status" class="fetch-status"></span>
+      <button class="btn btn-ghost" id="fetch-fx-btn2" onclick="fetchFxRates()" title="Update exchange rates">↻ FX Rates</button>
     </div>
-    <div id="fx-inline-status" style="font-size:.75rem;font-family:var(--font-mono);color:var(--text3);margin-top:.4rem"></div>
+    <div id="fetch-status" class="fetch-status" style="margin-top:.5rem"></div>
+    <div id="fx-inline-status" style="font-size:.72rem;font-family:var(--font-mono);color:var(--text3);margin-top:.3rem"></div>
   </div>
 
   <!-- Record purchase -->
@@ -83,91 +124,93 @@
     <div class="form-grid">
       <div class="field">
         <label>Ticker / Stock Search</label>
-        <input type="text" id="lot-ticker" placeholder="Type to search e.g. Safaricom, AAPL…"
+        <input type="text" id="lot-ticker" placeholder="e.g. SCOM, AAPL, BTC…"
                autocomplete="off" oninput="searchTickers('lot')" onblur="hideSuggestions('lot')"
                style="text-transform:uppercase"/>
         <div class="ticker-suggestions" id="lot-ticker-suggestions"></div>
       </div>
       <div class="field"><label>Exchange</label><select id="lot-exchange">{% for ex in exchanges %}<option value="{{ ex }}">{{ ex }}{% if ex in exchange_currency %} ({{ exchange_currency[ex] }}){% endif %}</option>{% endfor %}</select></div>
       <div class="field"><label>Shares</label><input type="number" id="lot-shares" placeholder="100" step="any" min="0.001"/></div>
-      <div class="field"><label>Purchase Price per Share</label><input type="number" id="lot-price" placeholder="17.50" step="any" min="0.001"/></div>
+      <div class="field"><label>Price per Share</label><input type="number" id="lot-price" placeholder="17.50" step="any" min="0.001"/></div>
       <div class="field"><label>Date</label><input type="date" id="lot-date"/></div>
-      <div class="field">
-        <label>Currency</label>
-        <select id="lot-currency">
-          {% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}
-        </select>
+      <div class="field"><label>Currency</label>
+        <select id="lot-currency">{% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}</select>
       </div>
       <div class="field"><label>Broker</label><input type="text" id="lot-broker" placeholder="Genghis, AIB-AXYS…"/></div>
     </div>
     <button class="btn btn-primary" onclick="addLot()">Add Purchase</button>
   </div>
 
-
   <!-- Excel import -->
   <div class="panel" id="excel-import-panel">
     <div class="panel-title" style="justify-content:space-between">
-      <span>Import from Excel <span style="font-size:.68rem;color:var(--text3);margin-left:.4rem">bulk upload lots</span></span>
-      <a href="/api/upload/lots-template" class="btn btn-ghost btn-sm" style="font-size:.72rem" download>↓ Download Template</a>
+      <span>Import from Excel <span style="font-size:.68rem;color:var(--text3);margin-left:.3rem">bulk upload</span></span>
+      <a href="/api/upload/lots-template" class="btn btn-ghost btn-sm" style="font-size:.72rem" download>↓ Template</a>
     </div>
-    <p class="panel-hint">Upload your Excel sheet (.xlsx). Preview rows before saving — nothing is written until you click Import.</p>
+    <p class="panel-hint">Preview before saving — nothing written until you click Import.</p>
     <div class="upload-zone" id="upload-zone"
          onclick="document.getElementById('excel-file-input').click()"
          ondragover="event.preventDefault();this.classList.add('drag-over')"
          ondragleave="this.classList.remove('drag-over')"
          ondrop="handleFileDrop(event)">
       <div class="upload-icon">📊</div>
-      <div class="upload-label">Click to choose file or drag &amp; drop here</div>
-      <div class="upload-sub">.xlsx files only · max 5MB</div>
-      <input type="file" id="excel-file-input" accept=".xlsx,.xls"
-             style="display:none" onchange="handleFileSelect(this)"/>
+      <div class="upload-label">Click or drag .xlsx file here</div>
+      <div class="upload-sub">max 5MB</div>
+      <input type="file" id="excel-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleFileSelect(this)"/>
     </div>
-    <div id="upload-preview" style="display:none;margin-top:1.2rem">
-      <div id="upload-summary" style="font-size:.82rem;margin-bottom:.8rem;padding:.6rem .9rem;border-radius:7px;background:var(--bg3);border:1px solid var(--border2)"></div>
-      <div id="upload-errors" style="display:none;margin-bottom:.8rem"></div>
-      <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+    <div id="upload-preview" style="display:none;margin-top:1rem">
+      <div id="upload-summary" style="font-size:.82rem;margin-bottom:.7rem;padding:.5rem .8rem;border-radius:7px;background:var(--bg3);border:1px solid var(--border2)"></div>
+      <div id="upload-errors" style="display:none;margin-bottom:.7rem"></div>
+      <div class="table-wrap" style="max-height:260px;overflow-y:auto">
         <table class="data-table" id="upload-table">
-          <thead><tr>
-            <th style="width:32px"></th>
-            <th>Ticker</th><th>Exchange</th><th>Shares</th>
-            <th>Buy Price</th><th>Currency</th><th>Date</th>
-            <th>Broker</th><th>Lot Value</th>
-          </tr></thead>
+          <thead><tr><th style="width:28px"></th><th>Ticker</th><th>Exch</th><th>Shares</th><th>Price</th><th>Ccy</th><th>Date</th><th>Broker</th><th>Value</th></tr></thead>
           <tbody id="upload-body"></tbody>
         </table>
       </div>
-      <div style="display:flex;gap:.8rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
+      <div style="display:flex;gap:.7rem;align-items:center;margin-top:.9rem;flex-wrap:wrap">
         <button class="btn btn-primary" id="confirm-import-btn" onclick="confirmImport()">Import All Rows</button>
         <button class="btn btn-ghost" onclick="cancelUpload()">Cancel</button>
-        <span id="import-result" style="font-size:.82rem;font-family:var(--font-mono)"></span>
+        <span id="import-result" style="font-size:.8rem;font-family:var(--font-mono)"></span>
       </div>
     </div>
   </div>
 
   <!-- Manual price -->
   <div class="panel">
-    <div class="panel-title">Update Market Price Manually</div>
+    <div class="panel-title">Update Price Manually</div>
     <div class="form-grid">
       <div class="field"><label>Ticker</label><input type="text" id="price-ticker" list="ticker-list" style="text-transform:uppercase"/><datalist id="ticker-list"></datalist></div>
       <div class="field"><label>Exchange</label><select id="price-exchange">{% for ex in exchanges %}<option value="{{ ex }}">{{ ex }}</option>{% endfor %}</select></div>
-      <div class="field"><label>Market Price</label><input type="number" id="price-val" step="any" min="0.001"/></div>
+      <div class="field"><label>Price</label><input type="number" id="price-val" step="any" min="0.001"/></div>
       <div class="field"><label>Date</label><input type="date" id="price-date"/></div>
     </div>
     <button class="btn btn-primary" onclick="addPrice()">Update Price</button>
   </div>
 
-  <!-- Lots table with search -->
+  <!-- All Purchase Lots -->
   <div class="panel">
     <div class="panel-title" style="justify-content:space-between">
       <span>All Purchase Lots</span>
-      <div style="display:flex;gap:.6rem;align-items:center">
-        <input type="text" id="lot-search" placeholder="Filter by ticker…" style="font-size:.78rem;padding:.3rem .6rem;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);width:150px" oninput="filterLots()"/>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <input type="text" id="lot-search" placeholder="Filter…"
+               style="font-size:.75rem;padding:.28rem .6rem;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);width:110px"
+               oninput="filterLots()"/>
         <a href="/api/export/lots.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a>
       </div>
     </div>
     <div class="table-wrap">
       <table class="data-table" id="lots-table">
-        <thead><tr><th>Date</th><th>Ticker</th><th>Exch</th><th>Ccy</th><th>Shares</th><th>Buy Price</th><th>Value (Local)</th><th>Value (KES)</th><th>Broker</th><th></th></tr></thead>
+        <thead><tr>
+          <th>Date</th><th>Ticker</th>
+          <th class="hide-xs">Exch</th>
+          <th class="hide-xs">Ccy</th>
+          <th class="num-col">Shares</th>
+          <th class="num-col hide-sm">Buy Price</th>
+          <th class="num-col">Value</th>
+          <th class="num-col hide-sm">KES</th>
+          <th class="hide-sm">Broker</th>
+          <th></th>
+        </tr></thead>
         <tbody id="lots-body"><tr><td colspan="10" class="empty">No purchases yet.</td></tr></tbody>
       </table>
     </div>
@@ -176,75 +219,64 @@
   <div class="panel" id="price-history-panel" style="display:none">
     <div class="panel-title">Price History</div>
     <div class="table-wrap">
-      <table class="data-table"><thead><tr><th>Date</th><th>Ticker</th><th>Exchange</th><th>Price</th><th>Note</th><th></th></tr></thead><tbody id="prices-body"></tbody></table>
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Ticker</th><th class="hide-xs">Exchange</th><th class="num-col">Price</th><th class="hide-sm">Note</th><th></th></tr></thead>
+        <tbody id="prices-body"></tbody>
+      </table>
     </div>
   </div>
 </div>
 
 <!-- ══ REALIZED GAINS ══ -->
 <div class="tab-pane" id="tab-realized">
-  <div class="stat-row" style="margin-top:1.5rem">
-    <div class="stat-card"><div class="stat-label">Total Realized Gain / Loss</div><div class="stat-value" id="rz-total">—</div></div>
+  <div class="kpi-grid" style="margin-top:1.2rem">
+    <div class="kpi-card"><div class="kpi-label">Total Realized P&amp;L</div><div class="kpi-val" id="rz-total">—</div></div>
   </div>
-
   <div class="panel">
     <div class="panel-title">Record Sale</div>
-    <p class="panel-hint">Select the lot you are selling from — purchase price fills automatically. You cannot sell more than the lot holds.</p>
+    <p class="panel-hint">Select the lot you are selling from — purchase price fills automatically.</p>
     <div class="form-grid">
       <div class="field field-wide">
-        <label>Select Lot to Sell From</label>
+        <label>Lot to Sell From</label>
         <select id="sale-lot-id" onchange="onLotSelected()">
           <option value="">— choose a lot —</option>
         </select>
       </div>
       <div class="lot-detail-card" id="lot-detail" style="display:none">
-        <div class="lot-detail-row"><span>Ticker</span><span id="ld-ticker">—</span></div>
-        <div class="lot-detail-row"><span>Exchange</span><span id="ld-exchange">—</span></div>
-        <div class="lot-detail-row"><span>Purchased</span><span id="ld-date">—</span></div>
-        <div class="lot-detail-row"><span>Purchase Price</span><span id="ld-price">—</span></div>
-        <div class="lot-detail-row"><span>Shares in Lot</span><span id="ld-shares">—</span></div>
-        <div class="lot-detail-row"><span>Original Shares</span><span id="ld-orig">—</span></div>
-        <div class="lot-detail-row"><span>Lot Value</span><span id="ld-value">—</span></div>
+        <div class="lot-detail-grid">
+          <span class="ld-label">Ticker</span><span class="ld-val" id="ld-ticker">—</span>
+          <span class="ld-label">Exchange</span><span class="ld-val" id="ld-exchange">—</span>
+          <span class="ld-label">Available</span><span class="ld-val" id="ld-shares">—</span>
+          <span class="ld-label">Buy Price</span><span class="ld-val" id="ld-price">—</span>
+          <span class="ld-label">Purchase Date</span><span class="ld-val" id="ld-date">—</span>
+        </div>
       </div>
-      <div class="field">
-        <label>Shares to Sell</label>
-        <input type="number" id="sale-shares" placeholder="e.g. 50" step="any" min="0.001" oninput="updateSalePreview()"/>
-        <div id="sale-shares-max" style="font-size:.72rem;color:var(--text3);margin-top:.25rem"></div>
-      </div>
-      <div class="field">
-        <label>Purchase Price (auto-filled)</label>
-        <input type="number" id="sale-buy-price" step="any" readonly
-               style="background:var(--bg3);color:var(--text2);cursor:not-allowed"/>
-      </div>
-      <div class="field">
-        <label>Sale Price per Share</label>
-        <input type="number" id="sale-price" placeholder="131.00" step="any" min="0.001" oninput="updateSalePreview()"/>
-      </div>
-      <div class="field">
-        <label>Date Sold</label>
-        <input type="date" id="sale-date"/>
-      </div>
-      <div class="field">
-        <label>Broker (optional)</label>
-        <input type="text" id="sale-broker" placeholder="Optional"/>
-      </div>
-      <div class="field">
-        <label>Note (optional)</label>
-        <input type="text" id="sale-note" placeholder="Optional"/>
-      </div>
+      <div class="field"><label>Shares to Sell</label><input type="number" id="sale-shares" step="any" min="0.001" placeholder="0"/></div>
+      <div class="field"><label>Sale Price per Share</label><input type="number" id="sale-price" step="any" min="0.001" placeholder="0.00"/></div>
+      <div class="field"><label>Date</label><input type="date" id="sale-date"/></div>
+      <div class="field"><label>Broker</label><input type="text" id="sale-broker" placeholder="Optional"/></div>
     </div>
-    <div id="sale-preview" style="font-size:.9rem;margin:.6rem 0 .9rem;font-family:var(--font-mono)"></div>
     <button class="btn btn-primary" onclick="recordSale()">Record Sale</button>
+    <span id="sale-result" style="margin-left:1rem;font-size:.82rem;font-family:var(--font-mono)"></span>
   </div>
-
   <div class="panel">
     <div class="panel-title" style="justify-content:space-between">
-      <span>All Sales</span>
+      <span>Sales History</span>
       <a href="/api/export/sales.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a>
     </div>
     <div class="table-wrap">
-      <table class="data-table"><thead><tr><th>Date</th><th>Ticker</th><th>Exchange</th><th>Shares</th><th>Buy Price</th><th>Sale Price</th><th>Gain / Loss</th><th>Broker</th><th></th></tr></thead>
-      <tbody id="sales-body"><tr><td colspan="9" class="empty">No sales recorded yet.</td></tr></tbody>
+      <table class="data-table">
+        <thead><tr>
+          <th>Date</th><th>Ticker</th>
+          <th class="hide-xs">Exch</th>
+          <th class="num-col">Shares</th>
+          <th class="num-col hide-sm">Buy</th>
+          <th class="num-col">Sold</th>
+          <th class="num-col">P&amp;L</th>
+          <th class="hide-sm">Broker</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="sales-body"><tr><td colspan="9" class="empty">No sales yet.</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -252,8 +284,8 @@
 
 <!-- ══ OTHER ASSETS ══ -->
 <div class="tab-pane" id="tab-other">
-  <div class="stat-row" style="margin-top:1.5rem">
-    <div class="stat-card"><div class="stat-label">Other Assets Net</div><div class="stat-value" id="stat-net">KES 0</div></div>
+  <div class="kpi-grid" style="margin-top:1.2rem">
+    <div class="kpi-card"><div class="kpi-label">Other Assets Net</div><div class="kpi-val" id="stat-net">—</div></div>
   </div>
   <div class="asset-summary" id="asset-summary"></div>
   <div class="panel">
@@ -261,11 +293,10 @@
     <div class="form-grid">
       <div class="field"><label>Label</label><input type="text" id="s-label" placeholder="e.g. Stanbic SACCO"/></div>
       <div class="field"><label>Asset Class</label><select id="s-class">{% for ac in asset_classes %}<option value="{{ ac }}">{{ ac }}</option>{% endfor %}</select></div>
-      <div class="field"><label>Amount (KES)</label><input type="number" id="s-amount" placeholder="0.00" min="0"/></div>
-      <div class="field"><label>Type</label><select id="s-type"><option value="deposit">Deposit ↑</option><option value="withdrawal">Withdrawal ↓</option></select></div>
-      <div class="field">
-        <label>Currency</label>
-        <select id="s-currency">
+      <div class="field"><label id="s-amount-label">Amount</label><input type="number" id="s-amount" placeholder="0.00" min="0" step="any"/></div>
+      <div class="field"><label>Type</label><select id="s-type"><option value="deposit">↑ Deposit</option><option value="withdrawal">↓ Withdrawal</option></select></div>
+      <div class="field"><label>Currency</label>
+        <select id="s-currency" onchange="updateAmountLabel('s-currency','s-amount-label')">
           {% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}
         </select>
       </div>
@@ -280,41 +311,53 @@
       <a href="/api/export/savings.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a>
     </div>
     <div class="table-wrap">
-      <table class="data-table"><thead><tr><th>Date</th><th>Label</th><th>Asset Class</th><th>Type</th><th>Amount</th><th>Note</th><th></th></tr></thead>
-      <tbody id="savings-body"><tr><td colspan="7" class="empty">No entries yet.</td></tr></tbody></table>
+      <table class="data-table" id="savings-table">
+        <thead><tr>
+          <th>Date</th><th>Label</th>
+          <th class="hide-sm">Asset Class</th>
+          <th class="hide-xs">Type</th>
+          <th class="num-col">Ccy</th>
+          <th class="num-col">Amount</th>
+          <th class="num-col hide-sm">KES Equiv</th>
+          <th class="hide-sm">Note</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="savings-body"><tr><td colspan="9" class="empty">No entries yet.</td></tr></tbody>
+      </table>
     </div>
   </div>
 </div>
 
 <!-- ══ FRIDAY REVIEW ══ -->
 <div class="tab-pane" id="tab-review">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin:1.5rem 0 1.2rem">
-    <div><div class="page-label" style="margin:0">AI-Powered · Every Friday</div><h2 style="font-family:var(--font-serif);font-size:1.6rem;font-weight:300">Portfolio Review</h2></div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin:1.2rem 0 1rem;flex-wrap:wrap;gap:.8rem">
+    <div>
+      <div class="page-label" style="margin:0">AI-Powered · Every Friday</div>
+      <h2 style="font-family:var(--font-serif);font-size:1.5rem;font-weight:300;margin:.2rem 0 0">Portfolio Review</h2>
+    </div>
     <button class="btn btn-primary" id="gen-review-btn" onclick="generateReview()">✦ Generate Review</button>
   </div>
-  <div id="review-loading" style="display:none" class="panel"><p style="color:var(--text2);font-style:italic">Generating your review… 20–30 seconds.</p></div>
+  <div id="review-loading" style="display:none" class="panel"><p style="color:var(--text2);font-style:italic">Generating… 20–40 seconds.</p></div>
   <div id="review-content"></div>
 </div>
 
 <!-- ══ SETTINGS ══ -->
 <div class="tab-pane" id="tab-settings">
-  <div class="panel" style="margin-top:1.5rem;max-width:520px">
+  <div class="panel" style="margin-top:1.2rem;max-width:520px">
     <div class="panel-title">Gemini API Key</div>
-    <p class="panel-hint">Used for AI price fetching and Friday reviews.</p>
+    <p class="panel-hint">Required for AI price fetching and portfolio reviews.</p>
     <div id="key-status" style="font-size:.82rem;color:var(--text2);margin-bottom:1rem"></div>
     <div id="sm-note" style="display:none;font-size:.8rem;color:var(--green);background:rgba(92,158,106,.08);border:1px solid rgba(92,158,106,.2);border-radius:8px;padding:.6rem .9rem;margin-bottom:1rem">
-      ✓ Using GCP Secret Manager — key is stored securely in the cloud. To update, use the GCP Console or gcloud CLI.
+      ✓ Using GCP Secret Manager — key stored securely.
     </div>
     <div id="manual-key-form">
       <div class="field" style="margin-bottom:1rem"><label>API Key</label><input type="password" id="gemini-key-input" placeholder="AIza…" autocomplete="off"/></div>
       <button class="btn btn-primary" onclick="saveGeminiKey()">Save Key</button>
     </div>
   </div>
-
-  <!-- FX Rates panel -->
-  <div class="panel" style="margin-top:1.2rem;max-width:520px">
+  <div class="panel" style="margin-top:1rem;max-width:520px">
     <div class="panel-title">FX Exchange Rates → KES</div>
-    <p class="panel-hint">Rates are shared globally for all users. Update once to convert USD/GBP/EUR holdings to KES.</p>
+    <p class="panel-hint">Shared for all users. Fetches automatically with prices, or update manually here.</p>
     <div id="fx-status" style="font-size:.82rem;color:var(--text2);margin-bottom:1rem">Loading…</div>
     <div id="fx-table-wrap" style="margin-bottom:1rem"></div>
     <button class="btn btn-primary" id="fetch-fx-btn" onclick="fetchFxRates()">↻ Update FX Rates via Gemini</button>
@@ -322,52 +365,43 @@
   </div>
 </div>
 
-<!-- Edit lot modal -->
+<!-- ══ MODALS ══ -->
 <div class="modal-overlay" id="edit-lot-modal" style="display:none">
-  <div class="modal"><div class="modal-title">Edit Purchase Lot</div>
+  <div class="modal">
+    <div class="modal-title">Edit Purchase Lot</div>
     <input type="hidden" id="el-id"/>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+    <div class="form-grid">
       <div class="field"><label>Ticker</label><input type="text" id="el-ticker" style="text-transform:uppercase"/></div>
       <div class="field"><label>Exchange</label><select id="el-exchange">{% for ex in exchanges %}<option value="{{ ex }}">{{ ex }}</option>{% endfor %}</select></div>
-      <div class="field"><label>Shares</label><input type="number" id="el-shares" step="any"/></div>
-      <div class="field"><label>Purchase Price</label><input type="number" id="el-price" step="any"/></div>
+      <div class="field"><label>Shares</label><input type="number" id="el-shares" step="any" min="0.001"/></div>
+      <div class="field"><label>Purchase Price</label><input type="number" id="el-price" step="any" min="0.001"/></div>
       <div class="field"><label>Date</label><input type="date" id="el-date"/></div>
       <div class="field"><label>Broker</label><input type="text" id="el-broker"/></div>
     </div>
-    <div class="modal-actions">
+    <div style="display:flex;gap:.7rem;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveLotEdit()">Save</button>
       <button class="btn btn-ghost" onclick="closeModal('edit-lot-modal')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveLotEdit()">Save Changes</button>
     </div>
   </div>
 </div>
 
-<!-- Edit saving modal -->
 <div class="modal-overlay" id="edit-saving-modal" style="display:none">
-  <div class="modal"><div class="modal-title">Edit Entry</div>
+  <div class="modal">
+    <div class="modal-title">Edit Entry</div>
     <input type="hidden" id="es-id"/>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr">
-      <div class="field field-wide"><label>Label</label><input type="text" id="es-label"/></div>
+    <div class="form-grid">
+      <div class="field"><label>Label</label><input type="text" id="es-label"/></div>
       <div class="field"><label>Asset Class</label><select id="es-class">{% for ac in asset_classes %}<option value="{{ ac }}">{{ ac }}</option>{% endfor %}</select></div>
-      <div class="field"><label>Amount</label><input type="number" id="es-amount" step="any"/></div>
-      <div class="field"><label>Type</label><select id="es-type"><option value="deposit">Deposit ↑</option><option value="withdrawal">Withdrawal ↓</option></select></div>
+      <div class="field"><label id="es-amount-label">Amount</label><input type="number" id="es-amount" min="0" step="any"/></div>
+      <div class="field"><label>Type</label><select id="es-type"><option value="deposit">↑ Deposit</option><option value="withdrawal">↓ Withdrawal</option></select></div>
+      <div class="field"><label>Currency</label><select id="es-currency" onchange="updateAmountLabel('es-currency','es-amount-label')">{% for cur in currencies %}<option value="{{ cur }}">{{ cur }}</option>{% endfor %}</select></div>
       <div class="field"><label>Date</label><input type="date" id="es-date"/></div>
-      <div class="field"><label>Note</label><input type="text" id="es-note"/></div>
+      <div class="field field-wide"><label>Note</label><input type="text" id="es-note"/></div>
     </div>
-    <div class="modal-actions">
+    <div style="display:flex;gap:.7rem;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveSavingEdit()">Save</button>
       <button class="btn btn-ghost" onclick="closeModal('edit-saving-modal')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSavingEdit()">Save Changes</button>
     </div>
   </div>
 </div>
-
-{% endblock %}
-{% block scripts %}
-<script>
-  const _td = new Date().toISOString().split("T")[0];
-  document.getElementById("s-date").value = _td;
-  document.getElementById("lot-date").value = _td;
-  document.getElementById("price-date").value = _td;
-  document.getElementById("sale-date").value = _td;
-  loadOverview(); loadStocks(); loadSavings(); loadKeyStatus(); loadReview(); loadActiveLots();
-</script>
 {% endblock %}
