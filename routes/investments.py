@@ -974,6 +974,7 @@ def investment_overview():
 @bp.route("/api/portfolio/review", methods=["POST"])
 @approved_required
 def gen_review():
+    """Start the 7-agent agentic review pipeline. Returns job_id immediately."""
     api_key = get_gemini_key(uid())
     if not api_key:
         return jsonify({"error": "No Gemini API key — add it in Settings"}), 400
@@ -990,12 +991,8 @@ def gen_review():
             sav[r["asset_class"]] = float(r["v"])
     finally:
         conn.close()
-    try:
-        review = generate_review(api_key, port, sav)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    cfg_set(uid(), "last_review", json.dumps({"date": _today(), **review}))
-    return jsonify({"ok": True, "review": review})
+    job_id = _agents.start_pipeline(uid(), api_key, port, sav)
+    return jsonify({"ok": True, "job_id": job_id, "agents": _agents.AGENTS})
 
 @bp.route("/api/portfolio/review")
 @approved_required
