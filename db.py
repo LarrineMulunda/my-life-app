@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS savings (
     user_id INTEGER NOT NULL REFERENCES users(id),
     label TEXT NOT NULL, asset_class TEXT NOT NULL,
     amount NUMERIC(15,4) NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('deposit','withdrawal')),
+    type TEXT NOT NULL CHECK(type IN ('deposit','withdrawal','interest')),
     currency TEXT NOT NULL DEFAULT 'KES',
     note TEXT DEFAULT '', date DATE NOT NULL
 );
@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS savings (
     user_id INTEGER NOT NULL REFERENCES users(id),
     label TEXT NOT NULL, asset_class TEXT NOT NULL,
     amount REAL NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('deposit','withdrawal')),
+    type TEXT NOT NULL CHECK(type IN ('deposit','withdrawal','interest')),
     currency TEXT NOT NULL DEFAULT 'KES',
     note TEXT DEFAULT '', date TEXT NOT NULL
 );
@@ -437,13 +437,39 @@ def _migrate(conn):
         ("habits",     "color TEXT DEFAULT '#C9A84C'"),
         ("habits",     "category TEXT DEFAULT 'General'"),
     ]
+    # PostgreSQL: update savings type CHECK constraint to allow 'interest'
+    if is_pg():
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                ALTER TABLE savings
+                DROP CONSTRAINT IF EXISTS savings_type_check
+            """)
+            cur.execute("""
+                ALTER TABLE savings
+                ADD CONSTRAINT savings_type_check
+                CHECK (type IN ('deposit','withdrawal','interest'))
+            """)
+            conn.commit()
+        except Exception:
+            try: conn.rollback()
+            except: pass
     for table, col in migrations:
         try:
-            conn.cursor().execute(f"ALTER TABLE {table} ADD COLUMN {col}")
-            if not is_pg():
+            if is_pg():
+                # PostgreSQL: use IF NOT EXISTS to avoid connection abort on duplicate
+                col_name = col.split()[0]
+                conn.cursor().execute(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col}")
+                conn.commit()
+            else:
+                conn.cursor().execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 conn.commit()
         except Exception:
             if not is_pg():
+                try: conn.rollback()
+                except: pass
+            else:
                 try: conn.rollback()
                 except: pass
     try:

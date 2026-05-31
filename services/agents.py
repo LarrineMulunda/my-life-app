@@ -665,6 +665,14 @@ Return ONLY valid JSON (no markdown, no code fences):
   "portfolio_badges": [
     {{"badge":"","icon":"","description":""}}
   ],
+  "investor_profile": {{
+    "type": "",
+    "sub_type": "",
+    "description": "",
+    "risk_appetite": "CONSERVATIVE|MODERATE|AGGRESSIVE",
+    "time_horizon": "",
+    "primary_goal": ""
+  }},
   "next_review_focus": "what to focus on in the next weekly review"
 }}"""
 
@@ -950,8 +958,9 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             "agentic": True,
             "agents": {
                 aid: state[aid].get("result", {})
-                for aid in ("performance","rebalancing","analyst",
-                            "thematic","corporate","verifier","summary")
+                for aid in ("performance","rebalancing","analyst","thematic",
+                            "corporate","dividend","health","verifier","summary")
+                if state.get(aid)  # only include agents that ran
             },
             **final,
         }

@@ -140,7 +140,7 @@ def get_savings():
     totals_kes, net_kes = {}, 0.0
     for e in rows:
         cur     = e.get("currency") or "KES"
-        sign    = 1 if e["type"] == "deposit" else -1
+        sign    = 1 if e["type"] in ("deposit","interest") else -1
         amt_kes = _to_kes(float(e["amount"]), cur, fx_rates) * sign
 
         e["currency"]    = cur
@@ -165,8 +165,8 @@ def add_saving():
     d = request.json or {}
     try:
         _require(d, "label", "asset_class", "amount", "type", "date")
-        if d["type"] not in ("deposit", "withdrawal"):
-            raise ValueError("type must be deposit or withdrawal")
+        if d["type"] not in ("deposit", "withdrawal", "interest"):
+            raise ValueError("type must be deposit, interest or withdrawal")
     except (ValueError, TypeError) as e:
         return jsonify({"error": str(e)}), 400
     conn = get_db()
@@ -908,7 +908,7 @@ def investment_overview():
     sav_by_class, broker_totals = {}, {}
     for r in sav_rows:
         cur  = r.get("currency") or "KES"
-        sign = 1 if r["type"] == "deposit" else -1
+        sign = 1 if r["type"] in ("deposit","interest") else -1
         # Always convert to KES so totals are comparable cross-currency
         v_kes = _to_kes(float(r["amount"]), cur, fx_rates) * sign
         sav_by_class[r["asset_class"]] = sav_by_class.get(r["asset_class"], 0) + v_kes
@@ -988,7 +988,7 @@ def gen_review():
         sav  = {}
         for r in _fetchall(conn, f"""
             SELECT asset_class,
-                   SUM(CASE WHEN type='deposit' THEN amount ELSE -amount END) as v
+                   SUM(CASE WHEN type IN ('deposit','interest') THEN amount ELSE -amount END) as v
             FROM savings WHERE user_id={ph()}
             GROUP BY asset_class
         """, (uid(),)):

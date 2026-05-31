@@ -42,6 +42,23 @@
     <div class="kpi-card"><div class="kpi-label">Unrealized P&amp;L</div><div class="kpi-val" id="ov-gain">—</div></div>
     <div class="kpi-card"><div class="kpi-label">Realized P&amp;L</div><div class="kpi-val" id="ov-realized">—</div></div>
   </div>
+  <!-- Investor type banner (populated from last review) -->
+  <div id="investor-type-banner" style="display:none;margin-bottom:1rem">
+    <div class="investor-banner">
+      <div class="investor-left">
+        <div class="investor-icon" id="investor-icon">📊</div>
+        <div>
+          <div class="investor-type" id="investor-type-label">—</div>
+          <div class="investor-sub"  id="investor-sub-label">—</div>
+        </div>
+      </div>
+      <div class="investor-pills">
+        <span class="investor-pill" id="investor-risk">—</span>
+        <span class="investor-pill" id="investor-horizon">—</span>
+        <span class="investor-pill" id="investor-goal">—</span>
+      </div>
+    </div>
+  </div>
   <div id="portfolio-badges" style="display:none;margin-bottom:1rem"></div>
 
   <div id="currency-note" class="currency-note" style="display:none">
@@ -344,7 +361,7 @@
       <div class="field"><label>Label</label><input type="text" id="s-label" placeholder="e.g. Stanbic SACCO"/></div>
       <div class="field"><label>Asset Class</label><select id="s-class">{% for ac in asset_classes %}<option value="{{ ac }}">{{ ac }}</option>{% endfor %}</select></div>
       <div class="field"><label id="s-amount-label">Amount</label><input type="number" id="s-amount" placeholder="0.00" min="0" step="any"/></div>
-      <div class="field"><label>Type</label><select id="s-type"><option value="deposit">↑ Deposit</option><option value="withdrawal">↓ Withdrawal</option></select></div>
+      <div class="field"><label>Type</label><select id="s-type"><option value="deposit">↑ Deposit</option><option value="interest">📈 Interest / Dividend</option><option value="withdrawal">↓ Withdrawal</option></select></div>
       <div class="field"><label>Currency</label>
         <select id="s-currency" onchange="updateAmountLabel('s-currency','s-amount-label')">
           {% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}
@@ -458,7 +475,7 @@
       <div class="field"><label>Label</label><input type="text" id="es-label"/></div>
       <div class="field"><label>Asset Class</label><select id="es-class">{% for ac in asset_classes %}<option value="{{ ac }}">{{ ac }}</option>{% endfor %}</select></div>
       <div class="field"><label id="es-amount-label">Amount</label><input type="number" id="es-amount" min="0" step="any"/></div>
-      <div class="field"><label>Type</label><select id="es-type"><option value="deposit">↑ Deposit</option><option value="withdrawal">↓ Withdrawal</option></select></div>
+      <div class="field"><label>Type</label><select id="es-type"><option value="deposit">↑ Deposit</option><option value="interest">📈 Interest / Dividend</option><option value="withdrawal">↓ Withdrawal</option></select></div>
       <div class="field"><label>Currency</label><select id="es-currency" onchange="updateAmountLabel('es-currency','es-amount-label')">{% for cur in currencies %}<option value="{{ cur }}">{{ cur }}</option>{% endfor %}</select></div>
       <div class="field"><label>Date</label><input type="date" id="es-date"/></div>
       <div class="field field-wide"><label>Note</label><input type="text" id="es-note"/></div>

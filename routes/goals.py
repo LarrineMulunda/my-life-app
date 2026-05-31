@@ -68,8 +68,9 @@ def _get_linked_value(conn, link_type, link_label, user_id, fx_rates):
                 WHERE user_id={p()} AND label={p()}
             """, (user_id, link_label))
             val = sum(
+                # deposits and interest add to balance; withdrawals subtract
                 _to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
-                if r["type"]=="deposit"
+                if r["type"] in ("deposit", "interest")
                 else -_to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
                 for r in rows)
             return round(val, 2), f"Other Assets: {link_label}"
@@ -81,7 +82,7 @@ def _get_linked_value(conn, link_type, link_label, user_id, fx_rates):
             """, (user_id, link_label))
             val = sum(
                 _to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
-                if r["type"]=="deposit"
+                if r["type"] in ("deposit", "interest")
                 else -_to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
                 for r in rows)
             return round(val, 2), f"Asset Class: {link_label}"

@@ -519,7 +519,7 @@ function goalCard(g) {
         <div>
           <div class="goal-name">${g.name}</div>
           <div class="goal-meta">${g.category} · target ${cur} ${fmt(g.target_amount)}</div>
-          ${g.link_type ? `<div style="font-family:var(--font-mono);font-size:.6rem;color:var(--gold2);margin-top:.1rem">⚡ Auto-linked: ${g.link_source||g.link_type}</div>` : ""}
+          ${g.link_type ? `<div style="font-family:var(--font-mono);font-size:.6rem;color:var(--gold2);margin-top:.1rem">🔗 ${g.auto_value_label||g.link_type} · KES ${fmt(g.auto_value_kes||0)}</div>` : ""}
         </div>
       </div>
       <div class="goal-right">

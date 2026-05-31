@@ -1277,3 +1277,53 @@ input, select, button { font-family: var(--font-body); font-size: .95rem; }
   display:flex; align-items:center; gap:.4rem;
   flex-wrap:wrap; white-space:nowrap;
 }
+
+/* ── Investor type banner ─────────────────────────────────────────────────── */
+.investor-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .9rem 1.2rem;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+.investor-left {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+}
+.investor-icon {
+  font-size: 1.9rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.investor-type {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  font-weight: 300;
+  color: var(--text);
+}
+.investor-sub {
+  font-family: var(--font-mono);
+  font-size: .65rem;
+  color: var(--gold2);
+  margin-top: .15rem;
+  letter-spacing: .05em;
+}
+.investor-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+}
+.investor-pill {
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  padding: .2rem .55rem;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--text3);
+  white-space: nowrap;
+}

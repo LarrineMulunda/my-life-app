@@ -116,19 +116,59 @@ async function loadOverview() {
     const badges = rv.review.portfolio_badges || rv.review.agents?.health?.result?.portfolio_badges || [];
     renderPortfolioBadges(badges);
   }
+  // Render investor type from health agent or summary
+  const investorProfile = rv.review?.investor_profile
+    || rv.review?.agents?.health?.investor_profile
+    || rv.review?.agents?.summary?.investor_profile
+    || null;
+  if (investorProfile) renderInvestorProfile(investorProfile);
 }
 
 function renderPortfolioBadges(badges) {
   const el = document.getElementById("portfolio-badges");
   if (!el || !badges?.length) return;
-  el.style.display = "flex";
-  el.style.cssText  = "display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem";
+  el.style.cssText = "display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem";
   el.innerHTML = badges.filter(b => b.awarded !== false).map(b => `
     <div class="portfolio-badge">
       <span class="badge-icon">${b.icon||"✦"}</span>
       <span class="badge-name">${b.badge}</span>
       <span class="badge-desc">${b.description||""}</span>
     </div>`).join("");
+}
+
+function renderInvestorProfile(profile) {
+  if (!profile?.type) return;
+  const banner   = document.getElementById("investor-type-banner");
+  const icon     = document.getElementById("investor-icon");
+  const typeEl   = document.getElementById("investor-type-label");
+  const subEl    = document.getElementById("investor-sub-label");
+  const riskEl   = document.getElementById("investor-risk");
+  const horizEl  = document.getElementById("investor-horizon");
+  const goalEl   = document.getElementById("investor-goal");
+
+  if (!banner) return;
+
+  const RISK_COLOR = {
+    CONSERVATIVE:"var(--green)", MODERATE:"var(--gold)", AGGRESSIVE:"var(--red)"
+  };
+  const ICONS = {
+    "Growth Investor":"🚀", "Income Investor":"💰", "Value Investor":"🔍",
+    "Balanced Investor":"⚖️", "Speculative Trader":"⚡", "Africa-Focused Investor":"🌍",
+    "Conservative Saver":"🛡️", "Thematic Investor":"🌐"
+  };
+
+  if (icon)    icon.textContent   = ICONS[profile.type] || "📊";
+  if (typeEl)  typeEl.textContent = profile.type || "—";
+  if (subEl)   subEl.textContent  = profile.sub_type || "";
+  if (riskEl) {
+    riskEl.textContent = profile.risk_appetite || "—";
+    riskEl.style.borderColor = RISK_COLOR[profile.risk_appetite] || "var(--gold)";
+    riskEl.style.color       = RISK_COLOR[profile.risk_appetite] || "var(--gold)";
+  }
+  if (horizEl) horizEl.textContent = profile.time_horizon || "—";
+  if (goalEl)  goalEl.textContent  = profile.primary_goal  || "—";
+
+  banner.style.display = "block";
 }
 
 async function loadNetWorthChart() {
@@ -1125,6 +1165,43 @@ function renderAgenticReview(agents, summary) {
       ${summary.kes_impact_note ? `<div class="review-fx-note">💱 ${summary.kes_impact_note}</div>` : ""}
     </div>
 
+    <!-- Investor Profile (from health + summary agents) -->
+    ${(health.investor_profile || summary.investor_profile) ? (() => {
+      const ip = health.investor_profile || summary.investor_profile;
+      const RISK_COLOR = {CONSERVATIVE:"var(--green)",MODERATE:"var(--gold)",AGGRESSIVE:"var(--red)"};
+      const ICONS = {"Growth Investor":"🚀","Income Investor":"💰","Value Investor":"🔍",
+        "Balanced Investor":"⚖️","Speculative Trader":"⚡","Africa-Focused Investor":"🌍",
+        "Conservative Saver":"🛡️","Thematic Investor":"🌐"};
+      const rc = RISK_COLOR[ip.risk_appetite] || "var(--gold)";
+      return `<div class="panel">
+        <div class="panel-title">🧬 Investor Profile</div>
+        <div style="display:flex;align-items:flex-start;gap:1.1rem;flex-wrap:wrap">
+          <div style="font-size:2.4rem;flex-shrink:0">${ICONS[ip.type]||"📊"}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-family:var(--font-serif);font-size:1.15rem;font-weight:300;color:var(--text)">${ip.type}</div>
+            ${ip.sub_type ? `<div style="font-family:var(--font-mono);font-size:.68rem;color:var(--gold2);margin:.2rem 0">${ip.sub_type}</div>` : ""}
+            ${ip.description ? `<p style="font-size:.84rem;color:var(--text2);margin:.5rem 0">${ip.description}</p>` : ""}
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+              <span class="investor-pill" style="border-color:${rc};color:${rc}">${ip.risk_appetite||"—"}</span>
+              <span class="investor-pill">${ip.time_horizon||"—"}</span>
+              <span class="investor-pill">${ip.primary_goal||"—"}</span>
+            </div>
+            ${(ip.strengths?.length||ip.gaps?.length) ? `
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-top:.9rem">
+                ${ip.strengths?.length ? `<div>
+                  <div class="review-sub" style="color:var(--green);margin-bottom:.3rem">Strengths</div>
+                  ${ip.strengths.map(s=>`<div style="font-size:.78rem;color:var(--text2);padding:.2rem 0">✦ ${s}</div>`).join("")}
+                </div>` : ""}
+                ${ip.gaps?.length ? `<div>
+                  <div class="review-sub" style="color:var(--gold2);margin-bottom:.3rem">Develop</div>
+                  ${ip.gaps.map(g=>`<div style="font-size:.78rem;color:var(--text2);padding:.2rem 0">→ ${g}</div>`).join("")}
+                </div>` : ""}
+              </div>` : ""}
+          </div>
+        </div>
+      </div>`;
+    })() : ""}
+
     <!-- Top 3 Actions -->
     ${actions ? `<div class="panel">
       <div class="panel-title">Top Actions This Week</div>
@@ -1427,18 +1504,47 @@ function renderAgenticReview(agents, summary) {
 }
 
 async function loadReview() {
-  const raw = await api("GET", "/api/portfolio/review");
-  if (!raw || !raw.review) return;
+  const wrap = document.getElementById("review-content");
+  const raw  = await api("GET", "/api/portfolio/review");
+
+  if (!raw || !raw.review) {
+    if (wrap) wrap.innerHTML = `
+      <div class="panel" style="text-align:center;padding:2.5rem 1.5rem">
+        <div style="font-size:2rem;margin-bottom:.7rem">✦</div>
+        <div style="font-family:var(--font-serif);font-size:1.2rem;color:var(--text);margin-bottom:.5rem">
+          No review yet
+        </div>
+        <p style="color:var(--text3);font-size:.84rem;max-width:380px;margin:0 auto 1.2rem">
+          Click <strong>✦ Generate Review</strong> above to run the 9-agent AI pipeline.
+          It fetches real-time data, analyses your portfolio health, stress-tests against
+          market scenarios, and gives you actionable weekly insights.
+        </p>
+        <button class="btn btn-primary" onclick="startAgenticReview()">✦ Generate Review</button>
+      </div>`;
+    return;
+  }
+
   const rev = raw.review;
+  const dateEl = document.getElementById("review-last-date");
+  if (dateEl && rev.date) dateEl.textContent = "Last: " + rev.date;
+
   if (rev.agentic && rev.agents) {
-    renderAgenticReview(
-      Object.fromEntries(
-        Object.entries(rev.agents).map(([k,v]) => [k, {status:"done",result:v}])
-      ),
-      rev.agents.summary || rev
+    // Wrap stored results so renderAgenticReview can access .result
+    const agentMap = Object.fromEntries(
+      Object.entries(rev.agents).map(([k,v]) => [k, {status:"done", result:v}])
     );
-    const dateEl = document.getElementById("review-last-date");
-    if (dateEl && rev.date) dateEl.textContent = "Last: " + rev.date;
+    renderAgenticReview(agentMap, rev.agents.summary || rev);
+  } else if (wrap) {
+    // Old format review — show a re-run prompt
+    wrap.innerHTML = `
+      <div class="panel" style="text-align:center;padding:2rem">
+        <p style="color:var(--text3);font-size:.84rem;margin-bottom:1rem">
+          Your last review was generated with the older pipeline and doesn't include
+          health scores, stress tests, or dividend intelligence.
+          Re-run to get the full 9-agent analysis.
+        </p>
+        <button class="btn btn-primary" onclick="startAgenticReview()">✦ Re-run Full Review</button>
+      </div>`;
   }
 }
 
