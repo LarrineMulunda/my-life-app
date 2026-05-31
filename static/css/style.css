@@ -1227,3 +1227,53 @@ input, select, button { font-family: var(--font-body); font-size: .95rem; }
 .anomaly-ticker { display:flex;align-items:center;gap:.5rem;flex-wrap:wrap; }
 .anomaly-actions{ display:flex;gap:.4rem;flex-wrap:wrap; }
 .anomaly-detail { display:flex;align-items:center;gap:1rem;flex-wrap:wrap;font-size:.8rem;font-family:var(--font-mono);color:var(--text2); }
+
+/* ── Portfolio badges (overview page) ────────────────────────────────────── */
+.portfolio-badge {
+  display:flex; align-items:center; gap:.45rem;
+  background:rgba(201,168,76,.08); border:1px solid rgba(201,168,76,.25);
+  border-radius:20px; padding:.3rem .7rem;
+  font-size:.72rem; white-space:nowrap;
+}
+.badge-icon { font-size:1rem; }
+.badge-name { color:var(--gold2); font-weight:500; }
+.badge-desc { color:var(--text3); display:none; }
+@media(min-width:480px) { .badge-desc { display:inline; } }
+
+/* Badge card in review */
+.badge-card {
+  display:flex; align-items:center; gap:.7rem;
+  background:var(--bg3); border:1px solid var(--border);
+  border-radius:12px; padding:.7rem 1rem;
+  min-width:200px; flex:1;
+}
+.badge-big-icon { font-size:1.8rem; flex-shrink:0; }
+
+/* Thematic exposure radar */
+.thematic-radar { display:flex; flex-direction:column; gap:.6rem; }
+.radar-row {
+  display:grid;
+  grid-template-columns: 160px 1fr auto;
+  align-items:center;
+  gap:.8rem;
+}
+@media(max-width:479px) {
+  .radar-row { grid-template-columns: 1fr; gap:.2rem; }
+}
+.radar-theme { font-size:.82rem; color:var(--text); }
+.radar-bar-wrap {
+  height:8px; background:var(--bg3); border-radius:4px;
+  overflow:visible; position:relative;
+  display:none;
+}
+@media(min-width:480px) { .radar-bar-wrap { display:block; } }
+.radar-bar { height:100%; border-radius:4px; }
+.radar-target-line {
+  position:absolute; top:-3px; bottom:-3px;
+  width:2px; background:rgba(255,255,255,.3);
+  border-radius:1px;
+}
+.radar-nums {
+  display:flex; align-items:center; gap:.4rem;
+  flex-wrap:wrap; white-space:nowrap;
+}

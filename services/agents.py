@@ -55,21 +55,35 @@ AGENTS = [
         "num":  5,
         "name": "Corporate Actions",
         "icon": "📅",
-        "desc": "Tracks dividends, earnings, splits and other actions",
+        "desc": "Upcoming dividends, earnings, splits — future-dated only",
+    },
+    {
+        "id":   "dividend",
+        "num":  6,
+        "name": "Dividend Intelligence",
+        "icon": "💰",
+        "desc": "YTD dividends received + full-year income projection",
+    },
+    {
+        "id":   "health",
+        "num":  7,
+        "name": "Portfolio Health",
+        "icon": "🏥",
+        "desc": "Sharpe ratio, stress tests, risk metrics across all asset classes",
     },
     {
         "id":   "verifier",
-        "num":  6,
+        "num":  8,
         "name": "Fact Verifier",
         "icon": "✅",
-        "desc": "Cross-checks all agent findings for accuracy",
+        "desc": "Cross-checks all findings for accuracy — HIGH confidence only",
     },
     {
         "id":   "summary",
-        "num":  7,
+        "num":  9,
         "name": "Executive Summary",
         "icon": "✦",
-        "desc": "Synthesises all insights into actionable recommendations",
+        "desc": "Synthesises all insights into badges, actions, watchlist",
     },
 ]
 
@@ -214,8 +228,18 @@ Return ONLY valid JSON (no markdown, no code fences):
   "overweight_positions": [{{"ticker":"","exchange":"","current_pct":0,"suggested_pct":0,"action":""}}],
   "underweight_areas": [{{"asset_class_or_sector":"","rationale":"","suggestion":""}}],
   "rebalancing_actions": [
-    {{"priority":"HIGH|MEDIUM|LOW","action":"BUY|SELL|TRIM|ADD","ticker":"","exchange":"",
-     "rationale":"","suggested_amount_pct":0}}
+    {{
+      "priority": "HIGH|MEDIUM|LOW",
+      "action": "BUY|SELL|TRIM|ADD",
+      "ticker": "",
+      "exchange": "",
+      "rationale": "",
+      "suggested_amount_pct": 0,
+      "trim_pct": 0,
+      "trim_shares_approx": 0,
+      "trim_value_kes_approx": 0,
+      "notes": ""
+    }}
   ],
   "ideal_allocation": [{{"category":"","target_pct":0,"current_pct":0}}],
   "rebalancing_summary": "2-3 sentence actionable summary"
@@ -288,13 +312,20 @@ Return ONLY valid JSON (no markdown, no code fences):
       "conviction": "HIGH|MEDIUM|LOW",
       "rationale": "",
       "current_exposure": "NONE|LOW|ADEQUATE|HIGH",
+      "current_exposure_pct": 0,
+      "current_holdings_in_theme": ["ticker1","ticker2"],
+      "exposure_commentary": "1 sentence on current vs ideal exposure",
+      "target_allocation_pct": 0,
       "instruments": [
         {{"ticker":"","exchange":"","type":"stock|etf","why":"","entry_note":""}}
       ]
     }}
   ],
   "africa_specific": [
-    {{"opportunity":"","rationale":"","instruments":[{{"ticker":"","exchange":"","note":""}}]}}
+    {{"opportunity":"","rationale":"","current_exposure":"NONE|LOW|ADEQUATE|HIGH","instruments":[{{"ticker":"","exchange":"","note":""}}]}}
+  ],
+  "exposure_radar": [
+    {{"theme":"","current_pct":0,"target_pct":0,"status":"OVERWEIGHT|ON_TARGET|UNDERWEIGHT|MISSING"}}
   ],
   "gaps_in_portfolio": ["list gaps vs megatrend exposure"],
   "thematic_summary": "2-3 sentence forward-looking outlook"
@@ -346,6 +377,194 @@ Return ONLY valid JSON (no markdown, no code fences):
     {{"date":"YYYY-MM-DD","ticker":"","event":"","importance":"HIGH|MEDIUM|LOW"}}
   ]
 }}"""
+
+
+
+def _prompt_dividend(ctx, portfolio):
+    """Dividend intelligence: earned YTD, expected this year, yield analysis."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    year  = datetime.today().year
+    # Build dividend-relevant holding summary
+    holds = []
+    for h in portfolio.get("holdings", []):
+        if h.get("total_shares", 0) > 0:
+            holds.append(
+                f"  {h['ticker']} ({h['exchange']}): "
+                f"{h['total_shares']} shares @ {h.get('market_price','?')} {h.get('currency','KES')}"
+            )
+    holdings_str = "\n".join(holds) or "  No holdings"
+
+    return f"""You are a dividend income analyst. Today is {today}.
+
+This investor holds the following positions:
+{holdings_str}
+
+Portfolio total market value: KES {portfolio.get('total_market', 0):,.0f}
+
+Use Google Search to research dividend history and upcoming payments for EACH holding.
+
+Calculate:
+1. Dividends actually RECEIVED so far in {year} (based on ex-dates already passed)
+2. Expected dividends remaining in {year} (ex-dates still ahead)
+3. Total projected annual income for {year}
+
+NSE dividends in KES, NYSE/NASDAQ in USD (then convert to KES at current rates).
+
+Return ONLY valid JSON (no markdown, no code fences):
+{{
+  "ytd_received": [
+    {{
+      "ticker": "",
+      "exchange": "",
+      "currency": "",
+      "amount_per_share": 0,
+      "shares_held": 0,
+      "total_received": 0,
+      "total_kes": 0,
+      "ex_date": "YYYY-MM-DD",
+      "pay_date": "YYYY-MM-DD",
+      "type": "interim|final|special"
+    }}
+  ],
+  "expected_remaining": [
+    {{
+      "ticker": "",
+      "exchange": "",
+      "currency": "",
+      "estimated_per_share": 0,
+      "shares_held": 0,
+      "total_expected": 0,
+      "total_kes_expected": 0,
+      "expected_ex_date": "YYYY-MM-DD",
+      "confidence": "HIGH|MEDIUM|LOW"
+    }}
+  ],
+  "summary": {{
+    "ytd_income_kes": 0,
+    "expected_remaining_kes": 0,
+    "projected_annual_kes": 0,
+    "portfolio_yield_pct": 0,
+    "top_income_ticker": "",
+    "dividend_growth_trend": "GROWING|STABLE|DECLINING|MIXED",
+    "income_commentary": "2-3 sentences on dividend income outlook"
+  }},
+  "non_dividend_holdings": ["list tickers that pay no dividend"]
+}}"""
+
+
+def _prompt_health(ctx, portfolio):
+    """Portfolio health: Sharpe ratio, stress testing, cross-asset metrics."""
+    today = datetime.today().strftime("%Y-%m-%d")
+
+    # Categorise holdings
+    stocks = [h for h in portfolio.get("holdings",[]) if h.get("exchange") not in ("CRYPTO",)]
+    crypto = [h for h in portfolio.get("holdings",[]) if h.get("exchange") == "CRYPTO"]
+
+    return f"""You are a portfolio risk analyst and quantitative strategist. Today is {today}.
+
+{ctx}
+
+This portfolio may include: stocks, ETFs, bonds, MMFs, crypto, farming/agriculture.
+
+Use Google Search to research:
+1. Current risk-free rate (Kenya 91-day T-bill rate)
+2. Volatility of individual holdings
+3. Correlation between asset classes
+4. Stress scenarios (2008 crash, COVID crash, 2022 rate hikes, Kenya shilling depreciation)
+
+Compute or estimate:
+- Sharpe Ratio = (portfolio return - risk-free rate) / portfolio std deviation
+- Max Drawdown: worst peak-to-trough decline scenario
+- Beta to global markets
+- Stress test: how much would this portfolio lose in each scenario
+
+Return ONLY valid JSON (no markdown, no code fences):
+{{
+  "health_score": 0,
+  "health_breakdown": {{
+    "diversification": 0,
+    "return_quality":  0,
+    "momentum":        0,
+    "income":          0,
+    "risk":            0
+  }},
+  "health_commentary": "2-sentence plain-English summary of the score",
+  "risk_metrics": {{
+    "sharpe_ratio":          0,
+    "risk_free_rate_pct":    0,
+    "estimated_volatility":  "LOW|MEDIUM|HIGH|VERY_HIGH",
+    "beta_to_global":        0,
+    "concentration_risk":    "LOW|MEDIUM|HIGH",
+    "currency_risk":         "LOW|MEDIUM|HIGH",
+    "liquidity_risk":        "LOW|MEDIUM|HIGH"
+  }},
+  "stress_tests": [
+    {{
+      "scenario":       "",
+      "description":    "",
+      "estimated_loss_pct": 0,
+      "estimated_loss_kes": 0,
+      "most_affected":  ["ticker1","ticker2"],
+      "defensive_assets": ["what would protect the portfolio"]
+    }}
+  ],
+  "asset_class_health": [
+    {{
+      "class":       "",
+      "allocation_pct": 0,
+      "health":      "STRONG|GOOD|NEUTRAL|WEAK",
+      "comment":     ""
+    }}
+  ],
+  "portfolio_badges": [
+    {{
+      "badge":       "",
+      "icon":        "",
+      "description": "",
+      "awarded":     true
+    }}
+  ],
+  "improvement_suggestions": ["list 3 specific actions to improve portfolio health"]
+}}
+
+BADGE CRITERIA (award if portfolio qualifies):
+- "Diversification Master" 🌍 : holdings across 3+ exchanges
+- "Dividend Investor" 💰 : 3+ dividend-paying stocks
+- "Growth Hunter" 🚀 : 50%+ in growth stocks/ETFs
+- "Africa First" 🌍 : 40%+ in African markets (NSE, JSE, etc)
+- "Tech Forward" 💻 : 30%+ in tech stocks/ETFs
+- "Income Builder" 📈 : portfolio yield > 3%
+- "Risk Manager" 🛡️ : well-diversified, Sharpe > 1
+- "Long Term Thinker" ⏳ : average holding age > 1 year
+- "Global Citizen" 🌐 : holdings in 4+ currencies"""
+
+
+def _prompt_analyst_multithreaded(ticker, exchange, portfolio_context):
+    """Per-ticker analyst prompt for multithreaded execution."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    return f"""You are a senior equity analyst. Today is {today}.
+
+Analyse {ticker} ({exchange}) using MULTIPLE sources to avoid bias.
+Poll: Goldman Sachs, Morgan Stanley, JPMorgan, UBS, Citi, BofA, Morningstar, CFRA, Bloomberg Intelligence.
+For African stocks also check: Rand Merchant Bank, Stanbic, AIB-AXYS, CBA Securities.
+
+Return ONLY valid JSON (no markdown):
+{{
+  "ticker":          "{ticker}",
+  "exchange":        "{exchange}",
+  "consensus":       "BUY|HOLD|SELL|MIXED",
+  "sources_count":   0,
+  "sources_list":    [],
+  "avg_price_target":"",
+  "upside_pct":      0,
+  "key_thesis":      "specific investment thesis or null if not found",
+  "bull_case":       "",
+  "bear_case":       "",
+  "recent_changes":  [{{"analyst":"","institution":"","action":"UPGRADE|DOWNGRADE|INITIATE","date":"","target":""}}],
+  "data_freshness":  "days since most recent note",
+  "skip":            false
+}}
+If you cannot find substantive analyst coverage from at least 2 sources, set skip=true."""
 
 
 def _prompt_verifier(agent_results):
@@ -409,7 +628,12 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 
 def _prompt_summary(agent_results, verifier_result):
-    all_str = json.dumps({**agent_results, "verifier": verifier_result}, indent=2)
+    # Limit context size to avoid token overflow
+    slim = {k: v for k, v in agent_results.items()}
+    all_str = json.dumps({**slim, "verifier": verifier_result}, indent=2)
+    # Truncate if too large
+    if len(all_str) > 60000:
+        all_str = all_str[:60000] + "...}"
     return f"""You are a senior wealth manager preparing a comprehensive weekly review for a Kenyan investor.
 Today is {datetime.today().strftime('%Y-%m-%d')}.
 
@@ -433,6 +657,14 @@ Return ONLY valid JSON (no markdown, no code fences):
   "risks_to_watch": ["list top 3 portfolio risks right now"],
   "opportunities": ["list top 3 opportunities"],
   "kes_impact_note": "how currency movements are affecting the KES value of foreign holdings",
+  "income_summary": {{
+    "ytd_income_kes": 0,
+    "projected_annual_kes": 0,
+    "yield_pct": 0
+  }},
+  "portfolio_badges": [
+    {{"badge":"","icon":"","description":""}}
+  ],
   "next_review_focus": "what to focus on in the next weekly review"
 }}"""
 
@@ -545,14 +777,15 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                           "name": a["name"], "icon": a["icon"]}
     _save_job(job_id, user_id, state)
 
-    def run_agent(agent_id, prompt_fn, *args):
-        state[agent_id]["status"] = "running"
+    def run_agent(agent_id, prompt_fn=None, *args, **kwargs):
+        state[agent_id]["status"]  = "running"
         state[agent_id]["started"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
         try:
-            prompt = prompt_fn(*args)
-            text   = _gemini(api_key, prompt, timeout=90)
-            result = _extract_json(text)
+            actual_fn = kwargs.pop("prompt_fn", prompt_fn)
+            prompt    = actual_fn(*args, **kwargs)
+            text      = _gemini(api_key, prompt, timeout=90)
+            result    = _extract_json(text)
             state[agent_id]["status"] = "done"
             state[agent_id]["result"] = result
         except Exception as e:
@@ -561,24 +794,91 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         state[agent_id]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
 
-    # ── Agents 1-5 in parallel ────────────────────────────────────────────────
+    # ── Agents 1-7 in parallel ────────────────────────────────────────────────
+    # Analyst runs per-ticker in sub-threads (multithreaded)
+    def run_analyst_multithreaded():
+        """Run one Gemini call per holding in parallel, merge results."""
+        holdings = portfolio.get("holdings", [])
+        if not holdings:
+            state["analyst"]["status"] = "done"
+            state["analyst"]["result"] = {"analyst_views":[],"hot_picks":[],"sector_sentiment":[],"market_context":"No holdings."}
+            _save_job(job_id, user_id, state)
+            return
+
+        state["analyst"]["status"] = "running"
+        _save_job(job_id, user_id, state)
+
+        per_ticker_results = {}
+        lock = threading.Lock()
+
+        def fetch_one(h):
+            ticker = h["ticker"]
+            exch   = h["exchange"]
+            try:
+                prompt = _prompt_analyst_multithreaded(ticker, exch, ctx)
+                text   = _gemini(api_key, prompt, timeout=60)
+                result = _extract_json(text)
+                if not result.get("skip", False) and result.get("key_thesis"):
+                    with lock:
+                        per_ticker_results[ticker] = result
+            except Exception as e:
+                pass  # Skip tickers where Gemini fails
+
+        ticker_threads = [
+            threading.Thread(target=fetch_one, args=(h,), daemon=True)
+            for h in holdings
+        ]
+        for t in ticker_threads: t.start()
+        for t in ticker_threads: t.join(timeout=75)
+
+        # Merge per-ticker results into analyst format
+        analyst_views = list(per_ticker_results.values())
+        # Also run a single call for hot picks
+        hot_picks = []
+        try:
+            _td = datetime.today().strftime("%Y-%m-%d")
+            picks_prompt = (
+                "You are an equity analyst. Today is " + _td + ". "
+                "Based on current market conditions, give the top 4 highest-conviction stock picks "
+                "from multiple sources (Goldman Sachs, Morgan Stanley, JPMorgan, Morningstar, Bloomberg). "
+                "Each pick MUST have a specific thesis AND a named near-term catalyst. "
+                "Max 4 picks from DIFFERENT sources. "
+                'Return ONLY JSON: {"hot_picks":[{"ticker":"","exchange":"","source":"",'
+                '"source_type":"","rating":"","price_target":"",'
+                '"thesis":"specific thesis required","catalyst":"specific catalyst",'
+                '"time_horizon":""}]}'
+            )
+            picks_text = _gemini(api_key, picks_prompt, timeout=60)
+            picks_data = _extract_json(picks_text)
+            hot_picks  = (picks_data.get("hot_picks") or [])[:4]
+        except Exception:
+            pass
+
+        state["analyst"]["status"] = "done"
+        state["analyst"]["result"] = {
+            "analyst_views":   analyst_views,
+            "hot_picks":       hot_picks,
+            "sector_sentiment":[],
+            "market_context":  f"Multi-source analysis of {len(analyst_views)} holdings.",
+        }
+        _save_job(job_id, user_id, state)
+
     threads = [
-        threading.Thread(target=run_agent, args=("performance", _prompt_performance, ctx)),
-        threading.Thread(target=run_agent, args=("rebalancing", _prompt_rebalancing, ctx)),
-        threading.Thread(target=run_agent, args=("analyst",     _prompt_analyst,     tickers_str)),
-        threading.Thread(target=run_agent, args=("thematic",    _prompt_thematic,    ctx)),
-        threading.Thread(target=run_agent, args=("corporate",   _prompt_corporate,   tickers_str)),
+        threading.Thread(target=run_agent,                 args=("performance", _prompt_performance, ctx)),
+        threading.Thread(target=run_agent,                 args=("rebalancing", _prompt_rebalancing, ctx)),
+        threading.Thread(target=run_analyst_multithreaded, args=()),
+        threading.Thread(target=run_agent,                 args=("thematic",    _prompt_thematic,    ctx)),
+        threading.Thread(target=run_agent,                 args=("corporate",   _prompt_corporate, tickers_str)),
+        threading.Thread(target=run_agent,                 args=("dividend",    _prompt_dividend,    ctx, portfolio)),
+        threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio)),
     ]
-    for t in threads:
-        t.daemon = True
-        t.start()
-    for t in threads:
-        t.join(timeout=120)  # wait up to 120s per agent
+    for t in threads: t.daemon = True; t.start()
+    for t in threads: t.join(timeout=150)
 
     # ── Agent 6: Verifier (waits for 1-5) ────────────────────────────────────
     agent_results = {
         aid: state[aid].get("result", {})
-        for aid in ("performance","rebalancing","analyst","thematic","corporate")
+        for aid in ("performance","rebalancing","analyst","thematic","corporate","dividend","health")
     }
     run_agent("verifier", _prompt_verifier, agent_results)
 
@@ -597,9 +897,10 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                 revision_prompt_map = {
                     "performance": _prompt_performance,
                     "rebalancing": _prompt_rebalancing,
-                    "analyst":     _prompt_analyst,
                     "thematic":    _prompt_thematic,
                     "corporate":   _prompt_corporate,
+                    "dividend":    _prompt_dividend,
+                    "health":      _prompt_health,
                 }
                 base_args = {
                     "performance": (ctx,),

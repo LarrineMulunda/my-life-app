@@ -536,9 +536,9 @@ def get_goals():
             # If linked to a source, compute auto_value_kes from it
             g["auto_value_kes"] = None
             g["auto_value_label"] = None
-            if g.get("link_type") and g.get("link_label"):
+            if g.get("link_type"):
                 g["auto_value_kes"], g["auto_value_label"] = _get_linked_value(
-                    conn, g["link_type"], g["link_label"], uid(), fx)
+                    conn, g["link_type"], g.get("link_label") or "", uid(), fx)
 
             g["progress"] = _calc_progress(g, contribs, fx, g["auto_value_kes"])
     finally:

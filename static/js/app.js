@@ -109,6 +109,26 @@ async function loadOverview() {
   }
 
   await loadNetWorthChart();
+
+  // Show portfolio badges if cached from last review
+  const rv = await api("GET", "/api/portfolio/review");
+  if (rv.review?.portfolio_badges?.length || rv.review?.agents?.health?.portfolio_badges?.length) {
+    const badges = rv.review.portfolio_badges || rv.review.agents?.health?.result?.portfolio_badges || [];
+    renderPortfolioBadges(badges);
+  }
+}
+
+function renderPortfolioBadges(badges) {
+  const el = document.getElementById("portfolio-badges");
+  if (!el || !badges?.length) return;
+  el.style.display = "flex";
+  el.style.cssText  = "display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem";
+  el.innerHTML = badges.filter(b => b.awarded !== false).map(b => `
+    <div class="portfolio-badge">
+      <span class="badge-icon">${b.icon||"✦"}</span>
+      <span class="badge-name">${b.badge}</span>
+      <span class="badge-desc">${b.description||""}</span>
+    </div>`).join("");
 }
 
 async function loadNetWorthChart() {
@@ -1236,6 +1256,145 @@ function renderAgenticReview(agents, summary) {
       <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);margin-top:.5rem">
         Confidence: ${verifier.overall_confidence||"—"} ·
         ${Object.entries(verifier.reliability_scores||{}).map(([k,v])=>`${k}: ${v}`).join(" · ")}
+      </div>
+    </div>` : ""}
+
+    <!-- Dividend Intelligence (from dedicated agent) -->
+    ${(dividend.summary || dividend.ytd_received?.length) ? `
+    <div class="panel">
+      <div class="panel-title" style="justify-content:space-between">
+        <span>💰 Dividend Intelligence ${dividend.summary ? "<small style='font-size:.65rem;color:var(--text3)'>(full year analysis)</small>" : ""}</span>
+        ${dividend.summary ? `<span style="font-family:var(--font-mono);font-size:.78rem;color:var(--gold2)">KES ${fmt(dividend.summary.projected_annual_kes||0)}/yr · ${dividend.summary.portfolio_yield_pct||0}% yield</span>` : ""}
+      </div>
+      ${dividend.summary?.income_commentary ? `<p style="font-size:.84rem;color:var(--text2);margin-bottom:.8rem">${dividend.summary.income_commentary}</p>` : ""}
+      <div class="review-grid-2" style="margin-bottom:1rem">
+        <div class="kpi-card"><div class="kpi-label">Received YTD</div><div class="kpi-val" style="color:var(--green)">KES ${fmt(dividend.summary?.ytd_income_kes||0)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Expected Remaining</div><div class="kpi-val" style="color:var(--gold2)">KES ${fmt(dividend.summary?.expected_remaining_kes||0)}</div></div>
+      </div>
+      ${(dividend.ytd_received||[]).length ? `
+        <div class="review-sub">Received This Year</div>
+        <div class="table-wrap">
+          <table class="data-table" style="font-size:.78rem;margin-bottom:.8rem">
+            <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Ex-Date</th><th class="num-col">Amount/Share</th><th class="num-col">Total</th><th class="num-col hide-sm">KES</th></tr></thead>
+            <tbody>${dividend.ytd_received.map(d=>`<tr>
+              <td class="wht mo">${d.ticker}</td>
+              <td class="hide-xs"><span class="hc-exchange-badge">${d.exchange||""}</span></td>
+              <td class="mo">${d.ex_date||"—"}</td>
+              <td class="num-col mo">${d.currency||""} ${d.amount_per_share||0}</td>
+              <td class="num-col mo pos">+${d.currency||""} ${fmt(d.total_received||0)}</td>
+              <td class="num-col hide-sm" style="color:var(--text2)">KES ${fmt(d.total_kes||0)}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>` : ""}
+      ${(dividend.expected_remaining||[]).length ? `
+        <div class="review-sub">Expected This Year (Future)</div>
+        <div class="table-wrap">
+          <table class="data-table" style="font-size:.78rem">
+            <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Est. Ex-Date</th><th class="num-col">Est./Share</th><th class="num-col">Est. Total KES</th><th class="hide-sm">Conf</th></tr></thead>
+            <tbody>${dividend.expected_remaining.map(d=>`<tr>
+              <td class="wht mo">${d.ticker}</td>
+              <td class="hide-xs"><span class="hc-exchange-badge">${d.exchange||""}</span></td>
+              <td class="mo" style="color:var(--gold2)">${d.expected_ex_date||"—"}</td>
+              <td class="num-col mo">${d.currency||""} ${d.estimated_per_share||0}</td>
+              <td class="num-col mo">KES ${fmt(d.total_kes_expected||0)}</td>
+              <td class="hide-sm"><span class="${d.confidence==='HIGH'?'badge-ok':d.confidence==='MEDIUM'?'badge-warn':'badge-info'}">${d.confidence||"?"}</span></td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>` : ""}
+    </div>` : ""}
+
+    <!-- Portfolio Health + Stress Tests (from dedicated agent) -->
+    ${health.risk_metrics || health.stress_tests?.length ? `
+    <div class="review-grid-2">
+      <div class="panel">
+        <div class="panel-title">🏥 Portfolio Health Metrics</div>
+        ${health.risk_metrics ? `
+          <div class="target-nums">
+            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.sharpe_ratio||"—"}</div><div class="tnum-lbl">Sharpe Ratio</div></div>
+            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.estimated_volatility||"—"}</div><div class="tnum-lbl">Volatility</div></div>
+            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.beta_to_global||"—"}</div><div class="tnum-lbl">Beta</div></div>
+            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.concentration_risk||"—"}</div><div class="tnum-lbl">Concentration</div></div>
+            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.currency_risk||"—"}</div><div class="tnum-lbl">Currency Risk</div></div>
+          </div>
+          ${(health.improvement_suggestions||[]).map(s=>`<div class="insight-row ins-action"><span class="ins-icon">💡</span><span>${s}</span></div>`).join("")}
+        ` : ""}
+      </div>
+      <div class="panel">
+        <div class="panel-title">⚡ Stress Tests</div>
+        ${(health.stress_tests||[]).map(st=>`
+          <div style="padding:.6rem 0;border-bottom:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
+              <div>
+                <div style="font-size:.84rem;color:var(--text)">${st.scenario}</div>
+                <div style="font-size:.72rem;color:var(--text3)">${st.description}</div>
+              </div>
+              <div style="font-family:var(--font-mono);font-size:.9rem;color:var(--red);white-space:nowrap">
+                ${st.estimated_loss_pct>0?"-":"+"}${Math.abs(st.estimated_loss_pct||0)}%
+                <div style="font-size:.65rem;color:var(--text3)">-KES ${fmt(st.estimated_loss_kes||0)}</div>
+              </div>
+            </div>
+          </div>`).join("")}
+      </div>
+    </div>` : ""}
+
+    <!-- Thematic Exposure Radar -->
+    ${(thematic.exposure_radar||[]).length ? `
+    <div class="panel">
+      <div class="panel-title">🌐 Thematic Exposure</div>
+      <div class="thematic-radar">
+        ${thematic.exposure_radar.map(r => {
+          const pct = r.current_pct||0;
+          const tgt = r.target_pct||10;
+          const ratio = Math.min(1, pct/tgt);
+          const statusColor = r.status==="ON_TARGET"?"var(--green)":r.status==="OVERWEIGHT"?"var(--gold)":r.status==="UNDERWEIGHT"?"var(--gold2)":"var(--red)";
+          return `<div class="radar-row">
+            <div class="radar-theme">${r.theme}</div>
+            <div class="radar-bar-wrap">
+              <div class="radar-bar" style="width:${Math.min(100,pct*5)}%;background:${statusColor}"></div>
+              <div class="radar-target-line" style="left:${Math.min(100,tgt*5)}%"></div>
+            </div>
+            <div class="radar-nums">
+              <span style="color:${statusColor};font-family:var(--font-mono);font-size:.72rem">${pct}%</span>
+              <span style="color:var(--text3);font-size:.65rem">/ ${tgt}% target</span>
+              <span class="${r.status==="ON_TARGET"?"badge-ok":r.status==="OVERWEIGHT"?"badge-warn":r.status==="MISSING"?"badge-err":"badge-info"}"
+                    style="font-size:.58rem">${r.status?.replace("_"," ")||""}</span>
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>` : ""}
+
+    <!-- Portfolio Badges (from health agent) -->
+    ${(health.portfolio_badges||summary.portfolio_badges||[]).filter(b=>b.awarded!==false).length ? `
+    <div class="panel">
+      <div class="panel-title">🏆 Portfolio Badges Earned</div>
+      <div style="display:flex;flex-wrap:wrap;gap:.7rem;padding:.3rem 0">
+        ${(health.portfolio_badges||summary.portfolio_badges||[]).filter(b=>b.awarded!==false).map(b=>`
+          <div class="badge-card">
+            <span class="badge-big-icon">${b.icon||"✦"}</span>
+            <div><div style="font-size:.84rem;color:var(--text)">${b.badge}</div><div style="font-size:.7rem;color:var(--text3)">${b.description||""}</div></div>
+          </div>`).join("")}
+      </div>
+    </div>` : ""}
+
+    <!-- Rebalancing actions with trim figures -->
+    ${(reb.rebalancing_actions||[]).length ? `
+    <div class="panel">
+      <div class="panel-title">⚖️ Rebalancing Actions</div>
+      <p style="font-size:.84rem;color:var(--text2);margin-bottom:.8rem">${reb.rebalancing_summary||""}</p>
+      <div class="table-wrap">
+        <table class="data-table" style="font-size:.78rem">
+          <thead><tr><th>Priority</th><th>Action</th><th>Ticker</th><th class="hide-xs">Exchange</th><th class="num-col hide-sm">Trim %</th><th class="num-col hide-sm">Est. Value KES</th><th>Rationale</th></tr></thead>
+          <tbody>${reb.rebalancing_actions.map(a=>`<tr>
+            <td><span class="${a.priority==='HIGH'?'badge-err':a.priority==='MEDIUM'?'badge-warn':'badge-info'}">${a.priority}</span></td>
+            <td><span class="reb-action ${['BUY','ADD'].includes(a.action)?'pos':['SELL','TRIM'].includes(a.action)?'neg':''}">${a.action}</span></td>
+            <td class="wht mo">${a.ticker||a.asset_class_or_sector||"—"}</td>
+            <td class="hide-xs"><span class="hc-exchange-badge hide-xs">${a.exchange||""}</span></td>
+            <td class="num-col hide-sm">${a.trim_pct?a.trim_pct+"%":"—"}</td>
+            <td class="num-col hide-sm">${a.trim_value_kes_approx?`KES ${fmt(a.trim_value_kes_approx)}`:"—"}</td>
+            <td style="font-size:.75rem;color:var(--text2)">${a.rationale||""}</td>
+          </tr>`).join("")}</tbody>
+        </table>
       </div>
     </div>` : ""}
 

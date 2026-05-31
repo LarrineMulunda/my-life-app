@@ -109,12 +109,14 @@
         <label>Link To <span style="color:var(--text3)">(auto-track balance)</span></label>
         <select id="g-link-type" onchange="onGoalLinkChange()">
           <option value="">Manual contributions only</option>
-          <option value="all_stocks">📈 All Stocks Portfolio</option>
-          <option value="savings_label">🏷 A savings label</option>
+          <option value="stocks">📈 Entire stock portfolio (market value)</option>
+          <option value="stocks_ticker">📊 Specific stock / ETF ticker</option>
+          <option value="savings_label">🏷 Other Assets — specific label</option>
+          <option value="savings_class">📁 Other Assets — asset class</option>
         </select>
       </div>
       <div class="field" id="g-link-label-wrap" style="display:none">
-        <label>Savings Label</label>
+        <label id="g-link-label-title">Select…</label>
         <select id="g-link-label"><option value="">Loading…</option></select>
       </div>
     </div>
@@ -657,16 +659,62 @@ async function deleteContrib(gid, cid) {
 
 // ── Goal link type helpers ────────────────────────────────────────────────────
 async function onGoalLinkChange() {
-  const type = document.getElementById("g-link-type")?.value;
-  const wrap = document.getElementById("g-link-label-wrap");
-  const sel  = document.getElementById("g-link-label");
-  if (!wrap || !sel) return;
-  wrap.style.display = type === "savings_label" ? "block" : "none";
-  if (type === "savings_label") {
-    const d = await api("GET", "/api/goals/savings-labels");
-    sel.innerHTML = (d.labels||[]).map(l =>
-      `<option value="${l.label}">${l.label} (${l.asset_class})</option>`
-    ).join("") || `<option value="">No savings labels found</option>`;
+  const type  = document.getElementById("g-link-type")?.value;
+  const wrap  = document.getElementById("g-link-label-wrap");
+  const sel   = document.getElementById("g-link-label");
+  const title = document.getElementById("g-link-label-title");
+  const hint  = document.getElementById("g-link-hint");
+  if (!wrap) return;
+
+  // "stocks" needs no label — just show a confirmation note
+  if (type === "stocks") {
+    wrap.style.display = "none";
+    if (hint) { hint.style.display = "block"; hint.textContent = "✓ Will auto-track the total market value of your entire stock portfolio."; }
+    return;
+  }
+  if (!type) {
+    wrap.style.display = "none";
+    if (hint) hint.style.display = "none";
+    return;
+  }
+
+  // All other types need a label selector
+  wrap.style.display = "block";
+  if (hint) { hint.style.display = "block"; hint.textContent = "Loading options…"; }
+  if (sel) sel.innerHTML = `<option value="">Loading…</option>`;
+
+  let data = null;
+  try {
+    const resp = await api("GET", "/api/savings-labels");
+    data = resp;
+  } catch(e) {
+    if (sel) sel.innerHTML = `<option value="">Error loading — check connection</option>`;
+    return;
+  }
+
+  if (type === "stocks_ticker") {
+    if (title) title.textContent = "Stock / ETF Ticker";
+    const tickers = data.tickers || [];
+    if (sel) sel.innerHTML = tickers.length
+      ? tickers.map(t => `<option value="${t.ticker}">${t.ticker} — ${t.exchange}</option>`).join("")
+      : `<option value="">No active stock positions found</option>`;
+    if (hint) hint.textContent = "✓ Will auto-track the market value of this specific ticker.";
+
+  } else if (type === "savings_label") {
+    if (title) title.textContent = "Other Assets Label";
+    const labels = data.labels || [];
+    if (sel) sel.innerHTML = labels.length
+      ? labels.map(l => `<option value="${l.label}">${l.label} (${l.asset_class})</option>`).join("")
+      : `<option value="">No Other Assets labels found — add entries in the Investments › Other Assets tab first</option>`;
+    if (hint) hint.textContent = "✓ Will auto-track the sum of all entries with this label.";
+
+  } else if (type === "savings_class") {
+    if (title) title.textContent = "Asset Class";
+    const classes = data.classes || [];
+    if (sel) sel.innerHTML = classes.length
+      ? classes.map(c => `<option value="${c}">${c}</option>`).join("")
+      : `<option value="">No asset classes found</option>`;
+    if (hint) hint.textContent = "✓ Will auto-track all Other Assets entries in this asset class.";
   }
 }
 
