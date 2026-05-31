@@ -14,7 +14,8 @@ import json
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from db import get_db, ph, is_pg, fx_set, fx_get_all, upsert_snapshot_sql
-from services.gemini import fetch_prices, fetch_fx_rates, generate_review
+from services.gemini import fetch_prices, fetch_fx_rates
+from services import agents as _agents
 from services.secrets import get_gemini_key
 
 bp = Blueprint("cron", __name__)
@@ -339,26 +340,15 @@ def cron_friday():
     for user in users:
         uid = user["id"]
         try:
-            review = _generate_user_review(uid, api_key)
-            # Save to config
-            conn = get_db()
-            try:
-                payload = json.dumps({"date": today, **review})
-                if is_pg():
-                    _exec(conn, """
-                        INSERT INTO config (user_id,key,value) VALUES (%s,%s,%s)
-                        ON CONFLICT(user_id,key) DO UPDATE SET value=EXCLUDED.value
-                    """, (uid, "last_review", payload))
-                else:
-                    _exec(conn, """
-                        INSERT OR REPLACE INTO config (user_id,key,value)
-                        VALUES (?,?,?)
-                    """, (uid, "last_review", payload))
-                conn.commit()
-            finally:
-                conn.close()
-            result["reviews"].append({"user_id": uid, "name": user["name"], "ok": True})
-            print(f"[cron/friday] Review saved for user {uid} ({user['name']})", flush=True)
+            # Start agentic pipeline (runs in background thread, saves its own results)
+            portfolio = _build_user_portfolio(uid)
+            sav       = _get_user_savings(uid)
+            job_id    = _agents.start_pipeline(uid, api_key, portfolio, sav)
+            result["reviews"].append({
+                "user_id": uid, "name": user["name"],
+                "ok": True, "job_id": job_id
+            })
+            print(f"[cron/friday] Pipeline started for user {uid} ({user['name']}) job={job_id}", flush=True)
         except Exception as e:
             msg = f"User {uid} ({user['name']}): {e}"
             result["errors"].append(msg)
@@ -370,6 +360,76 @@ def cron_friday():
     )
     return jsonify(result)
 
+
+def _build_user_portfolio(user_id):
+    """Build portfolio dict for a specific user (used by cron)."""
+    from db import fx_get_all
+    conn = get_db()
+    try:
+        lots    = _fetchall(conn,
+            f"SELECT * FROM stock_lots WHERE user_id={ph()} AND shares > 0", (user_id,))
+        prices  = _fetchall(conn, "SELECT * FROM global_prices ORDER BY date DESC")
+        sales   = _fetchall(conn,
+            f"SELECT * FROM stock_sales WHERE user_id={ph()}", (user_id,))
+    finally:
+        conn.close()
+
+    fx_rates = fx_get_all()
+    latest = {}
+    for p in prices:
+        k = (p["ticker"], p.get("exchange","NSE"))
+        if k not in latest: latest[k] = float(p["price"])
+
+    tickers = {}
+    for lot in lots:
+        exch = lot.get("exchange","NSE")
+        cur  = lot.get("currency") or EXCUR.get(exch,"KES")
+        k    = (lot["ticker"], exch)
+        if k not in tickers:
+            tickers[k] = {"ticker":lot["ticker"],"exchange":exch,"currency":cur,
+                          "total_shares":0,"total_cost":0}
+        tickers[k]["total_shares"] += float(lot["shares"])
+        tickers[k]["total_cost"]   += float(lot["shares"]) * float(lot["purchase_price"])
+
+    holdings = []
+    total_cost = total_market = 0
+    for k, h in tickers.items():
+        h["avg_cost"] = round(h["total_cost"]/h["total_shares"],4) if h["total_shares"] else 0
+        price = latest.get(k)
+        if price:
+            mkt = h["total_shares"] * price
+            h["market_price"] = price
+            h["pct_return"]   = round((mkt-h["total_cost"])/h["total_cost"]*100,2) if h["total_cost"] else 0
+            def to_kes(a,c): return float(a)*fx_rates.get(c or "KES",1.0)
+            total_market += to_kes(mkt, h["currency"])
+        else:
+            h["market_price"] = None; h["pct_return"] = None
+        def to_kes(a,c): return float(a)*fx_rates.get(c or "KES",1.0)
+        total_cost += to_kes(h["total_cost"], h["currency"])
+        holdings.append(h)
+
+    realized = sum((float(s["sale_price"])-float(s["purchase_price"]))*float(s["shares"]) for s in sales)
+    return {
+        "holdings": holdings,
+        "total_cost": round(total_cost,2),
+        "total_market": round(total_market,2),
+        "total_gain": round(total_market-total_cost,2),
+        "portfolio_pct": round((total_market-total_cost)/total_cost*100,2) if total_cost else 0,
+        "total_realized": round(realized,2),
+        "fx_rates": fx_rates,
+    }
+
+def _get_user_savings(user_id):
+    conn = get_db()
+    try:
+        rows = _fetchall(conn, f"""
+            SELECT asset_class,
+                   SUM(CASE WHEN type='deposit' THEN amount ELSE -amount END) as v
+            FROM savings WHERE user_id={ph()}
+            GROUP BY asset_class""", (user_id,))
+        return {r["asset_class"]: float(r["v"]) for r in rows if r.get("v")}
+    finally:
+        conn.close()
 
 def _generate_user_review(user_id, api_key):
     """Build portfolio context and call Gemini review for one user."""

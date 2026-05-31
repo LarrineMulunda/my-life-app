@@ -413,38 +413,172 @@ async function deletePrice(id) {
 }
 
 // ── Gemini ─────────────────────────────────────────────────────────────────
+const PRICE_AGENTS = [
+  {id:"agent1", icon:"📡", name:"Price Fetcher",    desc:"Fetching all ticker prices"},
+  {id:"agent2", icon:"🔎", name:"Anomaly Checker",  desc:"Comparing to previous prices"},
+  {id:"agent3", icon:"✅", name:"Reviewer",          desc:"Re-verifying flagged prices"},
+];
+
 async function fetchPricesAI() {
   const btn = document.getElementById("fetch-btn");
   const st  = document.getElementById("fetch-status");
-  btn.disabled = true; btn.textContent = "Fetching…";
-  st.textContent = "Calling Gemini AI with Google Search…"; st.className="fetch-status";
+  const ppl = document.getElementById("price-agent-status");
+  const trk = document.getElementById("price-pipeline-track");
+
+  btn.disabled = true; btn.textContent = "Running pipeline…";
+  st.textContent = ""; st.className = "fetch-status";
+
+  // Show pipeline UI
+  if (ppl) ppl.style.display = "block";
+  if (trk) renderPriceAgents({});
+
   try {
-    // Auto-fetch FX rates first if they look stale (empty global_fx table)
+    // Auto-fetch FX first if stale
     const fxCheck = await api("GET", "/api/fx-rates");
     const fxEmpty = !fxCheck.rates || Object.keys(fxCheck.rates).filter(k=>k!=="KES").length === 0;
     if (fxEmpty) {
-      st.textContent = "Fetching FX rates first…";
+      st.textContent = "⬡ Agent 0: Fetching FX rates first…";
       await api("POST", "/api/fx-rates/fetch", {});
     }
 
-    const d = await api("POST","/api/stocks/fetch-prices",{});
+    // Show agent 1 running
+    if (trk) renderPriceAgents({agent1:{status:"running"}, agent2:{status:"waiting"}, agent3:{status:"waiting"}});
+
+    const d = await api("POST", "/api/stocks/fetch-prices", {});
+
     if (d.ok) {
-      const skipped = d.skipped?.length ? ` · ${d.skipped.length} already up-to-date` : "";
-      const names   = d.saved.map(s=>`${s.ticker} ${s.price}`).join(" · ");
-      st.textContent = `✓ ${d.saved.length} updated (${d.date})${skipped}`;
-      if (names) st.textContent += `: ${names}`;
-      st.className = "fetch-status ok";
-      toast(`${d.saved.length} price${d.saved.length!==1?"s":""} updated ✓`);
+      // Update pipeline display with results
+      if (trk && d.agents) renderPriceAgents(d.agents);
+      if (ppl) setTimeout(() => { if(ppl) ppl.style.display="none"; }, 5000);
+
+      const a1 = d.agents?.agent1 || {};
+      const a2 = d.agents?.agent2 || {};
+      const a3 = d.agents?.agent3 || {};
+
+      let msg = `✓ ${d.written} prices written`;
+      if (a2.flagged) msg += ` · ${a2.flagged} flagged`;
+      if (a3.confirmed) msg += ` · ${a3.confirmed} confirmed`;
+      if (a3.corrected) msg += ` · ${a3.corrected} corrected`;
+      if (a3.manual_review) msg += ` · ${a3.manual_review} need review`;
+      if (d.skipped?.length) msg += ` · ${d.skipped.length} already up-to-date`;
+
+      st.textContent = msg;
+      st.className   = d.agents?.agent3?.manual_review ? "fetch-status" : "fetch-status ok";
+      toast("Price pipeline complete ✓");
+
+      // Show anomalies panel if there are pending items
+      if (d.manual_review?.length > 0) {
+        loadAnomalies();
+      }
+
       loadStocks(); loadOverview(); loadFxRates();
+
     } else if (d.error?.includes("API key")) {
       toast("Add your Gemini API key in Settings first.", "error");
       switchTab("settings");
+      if (ppl) ppl.style.display = "none";
     } else {
-      st.textContent = `✗ ${d.error}`; st.className="fetch-status err";
+      st.textContent = `✗ ${d.error||"Pipeline error"}`;
+      st.className   = "fetch-status err";
+      if (ppl) ppl.style.display = "none";
     }
-  } catch(e) { st.textContent="Network error"; st.className="fetch-status err"; toast("Network error","error"); }
-  finally { btn.disabled=false; btn.textContent="Fetch Current Prices"; }
+  } catch(e) {
+    st.textContent = "Network error — " + e.message;
+    st.className   = "fetch-status err";
+    if (ppl) ppl.style.display = "none";
+  }
+  finally {
+    btn.disabled = false;
+    btn.textContent = "Fetch Current Prices";
+  }
 }
+
+function renderPriceAgents(agents) {
+  const trk = document.getElementById("price-pipeline-track");
+  if (!trk) return;
+  trk.innerHTML = PRICE_AGENTS.map(a => {
+    const ag  = agents[a.id] || {};
+    const st  = ag.status || "waiting";
+    const cls = st==="done"?"agent-done":st==="running"?"agent-running":st==="error"?"agent-err":"agent-wait";
+    const spin= st==="running" ? '<span class="agent-spinner"></span>' : "";
+    const extra = st === "done" ? (() => {
+      if (a.id==="agent1") return ` · ${ag.prices_fetched||0} prices`;
+      if (a.id==="agent2") return ` · ${ag.clean||0} clean, ${ag.flagged||0} flagged`;
+      if (a.id==="agent3") return ` · ${ag.confirmed||0} confirmed, ${ag.corrected||0} corrected, ${ag.manual_review||0} manual`;
+      return "";
+    })() : "";
+    return `<div class="agent-step ${cls}">
+      <div class="agent-step-icon">${a.icon}${spin}</div>
+      <div class="agent-step-info">
+        <div class="agent-step-name">Agent ${a.id.replace("agent","")} — ${a.name}</div>
+        <div class="agent-step-desc">${st==="error"?(ag.error||"Error"):(a.desc+extra)}</div>
+      </div>
+      <div class="agent-step-status">${st==="done"?"✓":st==="running"?"…":st==="error"?"✗":"·"}</div>
+    </div>`;
+  }).join("");
+}
+
+// ── Anomaly management ────────────────────────────────────────────────────────
+async function loadAnomalies() {
+  const d = await api("GET", "/api/prices/anomalies");
+  const panel = document.getElementById("anomalies-panel");
+  const body  = document.getElementById("anomalies-body");
+  if (!panel || !body) return;
+
+  if (!d.pending?.length && !d.resolved?.length) {
+    panel.style.display = "none";
+    return;
+  }
+
+  panel.style.display = "block";
+
+  const pendingRows = (d.pending||[]).map(a => `
+    <div class="anomaly-row" id="anomaly-${a.id}">
+      <div class="anomaly-head">
+        <div class="anomaly-ticker">
+          <span class="${a.type==='fx'?'':'wht'} mo">${a.ticker}</span>
+          ${a.exchange && a.exchange!=='FX' ? `<span class="hc-exchange-badge">${a.exchange}</span>` : ''}
+          <span class="badge-err">⚠ Manual Review</span>
+          <span class="badge-info" style="font-size:.62rem">${a.reason||''}</span>
+        </div>
+        <div class="anomaly-actions">
+          <button class="btn btn-ghost btn-sm" onclick="acceptAnomaly(${a.id})">Accept</button>
+          <button class="btn btn-ghost btn-sm" onclick="correctAnomaly(${a.id}, ${a.fetched_value})">Correct</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--text3)" onclick="dismissAnomaly(${a.id})">Dismiss</button>
+        </div>
+      </div>
+      <div class="anomaly-detail">
+        <span>Previous: <strong>${a.previous_value!=null ? a.previous_value : "—"}</strong></span>
+        <span>Fetched: <strong style="color:${(a.pct_change||0)>0?'var(--green)':'var(--red)'}">${a.fetched_value}</strong></span>
+        <span class="${(a.pct_change||0)>0?'pos':'neg'}">${a.pct_change!=null?((a.pct_change>0?'+':'')+a.pct_change+'%'):'—'}</span>
+        <span style="color:var(--text3);font-size:.75rem">${a.review_note||''}</span>
+      </div>
+    </div>`).join("");
+
+  const resolvedCount = d.resolved?.length || 0;
+  body.innerHTML = pendingRows + (resolvedCount > 0
+    ? `<div style="font-family:var(--font-mono);font-size:.7rem;color:var(--text3);margin-top:.8rem;padding-top:.8rem;border-top:1px solid var(--border)">${resolvedCount} resolved anomalies (confirmed, corrected, or dismissed)</div>`
+    : "");
+}
+
+async function acceptAnomaly(id) {
+  const d = await api("POST", `/api/prices/anomalies/${id}/resolve`, {action:"accept"});
+  if (d.ok) { toast("Price accepted ✓"); loadAnomalies(); loadStocks(); }
+}
+
+async function dismissAnomaly(id) {
+  const d = await api("POST", `/api/prices/anomalies/${id}/resolve`, {action:"dismiss"});
+  if (d.ok) { toast("Anomaly dismissed."); loadAnomalies(); }
+}
+
+async function correctAnomaly(id, currentPrice) {
+  const corrected = prompt(`Enter the correct price (current fetched: ${currentPrice}):`, currentPrice);
+  if (!corrected || isNaN(parseFloat(corrected))) return;
+  const d = await api("POST", `/api/prices/anomalies/${id}/resolve`,
+    {action:"correct", price: parseFloat(corrected)});
+  if (d.ok) { toast("Price corrected ✓"); loadAnomalies(); loadStocks(); }
+}
+
 
 // ── Settings ───────────────────────────────────────────────────────────────
 async function loadKeyStatus() {
@@ -472,6 +606,688 @@ async function saveGeminiKey() {
 }
 
 // ── FX rate management ────────────────────────────────────────────────────────
+async function loadFxRates() {
+  const statusEl = document.getElementById("fx-status");
+  const tableEl  = document.getElementById("fx-table-wrap");
+  if (!statusEl) return;
+
+  const d = await api("GET", "/api/fx-rates");
+  if (!d || !d.rates) { statusEl.textContent = "No rates loaded yet."; return; }
+
+  const asOf = d.as_of && d.as_of !== "—" ? `as of ${d.as_of}` : "defaults (not yet fetched)";
+  statusEl.innerHTML = `<span style="color:var(--text3)">Rates ${asOf}</span>`;
+
+  const CURRENCIES = ["USD","GBP","EUR","ZAR","TZS","UGX","GHS","HKD"];
+  if (tableEl) {
+    tableEl.innerHTML = `<table class="data-table" style="max-width:340px">
+      <thead><tr><th>Currency</th><th>Rate to KES</th></tr></thead>
+      <tbody>${CURRENCIES.filter(c => d.rates[c]).map(c =>
+        `<tr><td class="mo" style="color:var(--gold2)">${c}</td>
+             <td class="mo">1 ${c} = ${d.rates[c].toFixed(4)} KES</td></tr>`
+      ).join("")}</tbody></table>`;
+  }
+}
+
+async function fetchFxRates() {
+  // Update both buttons (one on Stocks tab, one on Settings tab)
+  ["fetch-fx-btn","fetch-fx-btn2"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent="Fetching FX…"; el.disabled=true; }
+  });
+  const res     = document.getElementById("fx-result");
+  const inlineEl= document.getElementById("fx-inline-status");
+
+  const d = await api("POST", "/api/fx-rates/fetch", {});
+
+  ["fetch-fx-btn","fetch-fx-btn2"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = id==="fetch-fx-btn2" ? "↻ Update FX Rates" : "↻ Update FX Rates via Gemini";
+      el.disabled = false;
+    }
+  });
+
+  if (d.ok) {
+    if (res) res.innerHTML = `<span style="color:var(--green)">✓ Rates updated ${d.date}</span>`;
+    if (inlineEl) {
+      const ratesList = Object.entries(d.rates||{})
+        .filter(([k])=>k!=="KES").map(([k,v])=>`1 ${k} = ${parseFloat(v).toFixed(2)} KES`).join(" · ");
+      inlineEl.innerHTML = `<span style="color:var(--green)">✓ FX updated ${d.date}</span> · ${ratesList}`;
+    }
+    toast("FX rates updated ✓");
+    loadFxRates();
+    loadStocks();
+    loadOverview();
+  } else {
+    if (res) res.innerHTML = `<span style="color:var(--red)">✗ ${d.error}</span>`;
+    if (inlineEl) inlineEl.innerHTML = `<span style="color:var(--red)">✗ ${d.error||"FX fetch failed"}</span>`;
+    toast(d.error || "FX fetch failed", "error");
+  }
+}
+
+// ── Ticker search ──────────────────────────────────────────────────────────
+let _tickerSearchTimeout = null;
+let _activeLots = [];
+
+async function searchTickers(prefix) {
+  const input = document.getElementById(`${prefix}-ticker`);
+  const sugEl = document.getElementById(`${prefix}-ticker-suggestions`);
+  if (!input || !sugEl) return;
+
+  const q = input.value.trim();
+  if (q.length < 1) { sugEl.style.display = "none"; return; }
+
+  clearTimeout(_tickerSearchTimeout);
+  _tickerSearchTimeout = setTimeout(async () => {
+    // Get exchange filter if available
+    const exchEl = document.getElementById(`${prefix}-exchange`);
+    const exch   = (exchEl && exchEl.value) ? `&exchange=${exchEl.value}` : "";
+    const d = await api("GET", `/api/tickers?q=${encodeURIComponent(q)}${exch}&limit=8`);
+    const tickers = d.tickers || [];
+    if (!tickers.length) { sugEl.style.display = "none"; return; }
+
+    sugEl.innerHTML = tickers.map(t => `
+      <div class="ticker-suggestion" onmousedown="selectTicker('${prefix}', '${t.symbol}', '${t.exchange}', '${t.name}', '${t.currency}')">
+        <span class="ts-symbol">${t.symbol}</span>
+        <span class="ts-type ${t.type}">${t.type}</span>
+        <span class="ts-name">${t.name}</span>
+        <span class="ts-exch">${t.exchange}</span>
+      </div>`).join("");
+    sugEl.style.display = "block";
+  }, 200);
+}
+
+function selectTicker(prefix, symbol, exchange, name, currency) {
+  const input  = document.getElementById(`${prefix}-ticker`);
+  const exchEl = document.getElementById(`${prefix}-exchange`);
+  const sugEl  = document.getElementById(`${prefix}-ticker-suggestions`);
+  if (input)  input.value  = symbol;
+  if (exchEl) exchEl.value = exchange;
+  const curEl = document.getElementById(`${prefix}-currency`);
+  if (curEl && currency) curEl.value = currency;
+  if (sugEl)  sugEl.style.display = "none";
+}
+
+function hideSuggestions(prefix) {
+  setTimeout(() => {
+    const el = document.getElementById(`${prefix}-ticker-suggestions`);
+    if (el) el.style.display = "none";
+  }, 200);
+}
+
+// ── Realized gains (lot-based) ──────────────────────────────────────────────
+
+async function loadActiveLots() {
+  const d = await api("GET", "/api/stocks/lots");
+  _activeLots = d.lots || [];
+  const sel = document.getElementById("sale-lot-id");
+  if (!sel) return;
+  sel.innerHTML = "<option value=''>— choose a lot —</option>" +
+    _activeLots.map(l =>
+      `<option value="${l.id}">${l.ticker} (${l.exchange}) · ${l.shares.toLocaleString()} shares @ ${fmtP(l.purchase_price, l.exchange==='NSE'?'KES':l.exchange==='LSE'?'GBP':'USD')} · ${fmtDate(l.date)}</option>`
+    ).join("");
+}
+
+function onLotSelected() {
+  const sel    = document.getElementById("sale-lot-id");
+  const detail = document.getElementById("lot-detail");
+  const lotId  = parseInt(sel.value);
+  const lot    = _activeLots.find(l => l.id === lotId);
+
+  if (!lot) {
+    if (detail) detail.style.display = "none";
+    return;
+  }
+
+  const cur = lot.exchange === "NSE" ? "KES" : lot.exchange === "LSE" ? "GBP" :
+              lot.exchange === "JSE" ? "ZAR" : "USD";
+
+  document.getElementById("ld-ticker").textContent   = lot.ticker;
+  document.getElementById("ld-exchange").textContent  = lot.exchange;
+  document.getElementById("ld-date").textContent      = fmtDate(lot.date);
+  document.getElementById("ld-price").textContent     = `${cur} ${lot.purchase_price.toFixed(2)}`;
+  document.getElementById("ld-shares").textContent    = `${lot.shares.toLocaleString()} shares available`;
+  document.getElementById("ld-orig").textContent      = `${lot.original_shares.toLocaleString()} shares originally`;
+  document.getElementById("ld-value").textContent     = fmt(lot.lot_value, cur);
+  detail.style.display = "flex";
+
+  // Auto-fill purchase price (readonly)
+  document.getElementById("sale-buy-price").value = lot.purchase_price.toFixed(4);
+
+  // Update max shares hint
+  document.getElementById("sale-shares").max = lot.shares;
+  document.getElementById("sale-shares-max").textContent =
+    `Max: ${lot.shares.toLocaleString()} shares`;
+
+  document.getElementById("sale-broker").value = lot.broker || "";
+  updateSalePreview();
+}
+
+function updateSalePreview() {
+  const lotId  = parseInt(document.getElementById("sale-lot-id")?.value);
+  const lot    = _activeLots.find(l => l.id === lotId);
+  const shares = parseFloat(document.getElementById("sale-shares")?.value)||0;
+  const buyP   = parseFloat(document.getElementById("sale-buy-price")?.value)||0;
+  const saleP  = parseFloat(document.getElementById("sale-price")?.value)||0;
+  const el     = document.getElementById("sale-preview");
+  if (!el) return;
+
+  if (!lot || !shares || !buyP || !saleP) { el.textContent = ""; return; }
+
+  if (shares > lot.shares) {
+    el.textContent = `⚠ Cannot sell ${shares} — only ${lot.shares} available`;
+    el.style.color = "var(--red)";
+    return;
+  }
+
+  const gain = (saleP - buyP) * shares;
+  const cur  = lot.exchange === "NSE" ? "KES" : lot.exchange === "LSE" ? "GBP" :
+               lot.exchange === "JSE" ? "ZAR" : "USD";
+  el.innerHTML =
+    `<span style="color:${gain>=0?"var(--green)":"var(--red)"}">
+       ${sign(gain)}${fmt(gain,cur)} gain/loss
+     </span>
+     &nbsp;&nbsp;
+     <span style="color:var(--text3)">
+       Remaining after sale: ${(lot.shares - shares).toFixed(lot.shares % 1 ? 4 : 0)} shares
+     </span>`;
+  el.style.color = "";
+}
+
+async function recordSale() {
+  const lot_id       = document.getElementById("sale-lot-id").value;
+  const shares       = document.getElementById("sale-shares").value;
+  const sale_price   = document.getElementById("sale-price").value;
+  const date         = document.getElementById("sale-date").value;
+  const broker       = document.getElementById("sale-broker").value.trim();
+  const note         = document.getElementById("sale-note").value.trim();
+
+  if (!lot_id)      return toast("Select a lot to sell from.", "error");
+  if (!shares)      return toast("Enter shares to sell.", "error");
+  if (!sale_price)  return toast("Enter the sale price.", "error");
+
+  const lot = _activeLots.find(l => l.id === parseInt(lot_id));
+  if (lot && parseFloat(shares) > lot.shares) {
+    return toast(`Cannot sell ${shares} — only ${lot.shares} available in this lot.`, "error");
+  }
+
+  const d = await api("POST","/api/stocks/sale",
+    {lot_id: parseInt(lot_id), shares_to_sell: parseFloat(shares), sale_price, date, broker, note});
+
+  if (d.ok) {
+    const cur = lot?.exchange === "NSE" ? "KES" : lot?.exchange === "LSE" ? "GBP" : "USD";
+    const msg = d.remaining > 0
+      ? `Sale recorded — ${sign(d.gain_loss)}${fmt(d.gain_loss,cur)} · ${d.remaining} shares remain in lot ✓`
+      : `Sale recorded — ${sign(d.gain_loss)}${fmt(d.gain_loss,cur)} · Lot fully sold ✓`;
+    toast(msg);
+    ["sale-shares","sale-price","sale-broker","sale-note"].forEach(id => document.getElementById(id).value="");
+    document.getElementById("sale-preview").textContent = "";
+    document.getElementById("lot-detail").style.display = "none";
+    document.getElementById("sale-lot-id").value = "";
+    loadStocks(); loadOverview(); loadActiveLots();
+  }
+}
+
+async function deleteSale(id) {
+  if (!confirm("Remove this sale? Shares will be restored to the lot.")) return;
+  const d = await api("DELETE",`/api/stocks/sale/${id}`);
+  if (d.ok) { toast("Sale removed — shares restored to lot."); loadStocks(); loadOverview(); loadActiveLots(); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   OTHER SAVINGS
+══════════════════════════════════════════════════════════════════════════ */
+
+// Update amount label to show selected currency
+function updateAmountLabel(selectId, labelId) {
+  const cur = document.getElementById(selectId)?.value || "KES";
+  const lbl = document.getElementById(labelId);
+  if (lbl) lbl.textContent = cur === "KES" ? "Amount (KES)" : `Amount (${cur})`;
+}
+async function loadSavings() {
+  const data = await api("GET","/api/savings");
+
+  // Net total in KES
+  const net = document.getElementById("stat-net");
+  if (net) {
+    net.textContent = fmt(data.net_total);
+    net.style.color = data.net_total >= 0 ? "var(--gold2)" : "var(--red)";
+  }
+
+  // Asset class summary badges (all in KES)
+  const sumEl = document.getElementById("asset-summary");
+  if (sumEl) sumEl.innerHTML = Object.entries(data.totals_by_class||{}).map(([cls,val])=>`
+    <div class="asset-badge">
+      <span class="badge-label">${cls}</span>
+      <span class="badge-val ${val>=0?"pos":"neg"}">${fmt(val)}</span>
+    </div>`).join("") || `<span style="color:var(--text3);font-size:.85rem">No entries yet.</span>`;
+
+  const tbody = document.getElementById("savings-body");
+  if (!tbody) return;
+  tbody.innerHTML = (data.entries||[]).length ? data.entries.map(e => {
+    const cur       = e.currency || "KES";
+    const sign      = e.type === "deposit" ? 1 : -1;
+    const amtDisp   = (sign > 0 ? "+" : "−") + cur + " " + fmt(Math.abs(e.amount));
+    const kesDisp   = e.is_foreign
+      ? fmt(Math.abs(e.amount_kes))
+      : "—";
+    const fxNote    = e.is_foreign
+      ? `<span style="font-size:.6rem;color:var(--text3);display:block">@${parseFloat(e.fx_rate_kes).toFixed(4)}</span>`
+      : "";
+    const amtColor  = e.type === "deposit" ? "var(--green)" : "var(--red)";
+
+    return `<tr>
+      <td>${fmtDate(e.date)}</td>
+      <td class="wht">${e.label}</td>
+      <td><span class="asset-badge" style="display:inline-flex;padding:.15rem .55rem">${e.asset_class}</span></td>
+      <td class="${e.type}">${e.type==="deposit"?"↑ Deposit":"↓ Withdrawal"}</td>
+      <td class="mo" style="color:var(--gold2)">${cur}</td>
+      <td class="mo" style="color:${amtColor}">${amtDisp}</td>
+      <td class="mo" style="color:var(--text2)">${kesDisp}${fxNote}</td>
+      <td>${e.note||"—"}</td>
+      <td style="display:flex;gap:.3rem">
+        <button class="btn-icon" onclick="openEditSaving(${JSON.stringify(e).replace(/"/g,'&quot;')})" title="Edit">✎</button>
+        <button class="btn-icon" onclick="deleteSaving(${e.id})" title="Delete">✕</button>
+      </td></tr>`;
+  }).join("") : `<tr><td colspan="9" class="empty">No entries yet.</td></tr>`;
+}
+
+async function addSaving() {
+  const label=document.getElementById("s-label").value.trim();
+  const cls  =document.getElementById("s-class").value;
+  const amt  =document.getElementById("s-amount").value;
+  const type =document.getElementById("s-type").value;
+  const date =document.getElementById("s-date").value;
+  const note =document.getElementById("s-note").value.trim();
+  const currency = document.getElementById("s-currency")?.value || "KES";
+  const d = await api("POST","/api/savings",{label,asset_class:cls,amount:amt,type,currency,date,note});
+  if (d.ok) {
+    toast("Entry added ✓");
+    document.getElementById("s-label").value="";
+    document.getElementById("s-amount").value="";
+    document.getElementById("s-note").value="";
+    loadSavings(); loadOverview();
+  }
+}
+
+function openEditSaving(entry) {
+  document.getElementById("es-id").value       = entry.id;
+  document.getElementById("es-label").value    = entry.label;
+  document.getElementById("es-class").value    = entry.asset_class;
+  document.getElementById("es-amount").value   = entry.amount;
+  document.getElementById("es-type").value     = entry.type;
+  document.getElementById("es-date").value     = entry.date;
+  document.getElementById("es-note").value     = entry.note||"";
+  const cur = entry.currency || "KES";
+  const esCur = document.getElementById("es-currency");
+  if (esCur) { esCur.value = cur; updateAmountLabel("es-currency","es-amount-label"); }
+  document.getElementById("edit-saving-modal").style.display="flex";
+}
+async function saveSavingEdit() {
+  const id = document.getElementById("es-id").value;
+  const payload = {
+    label:      document.getElementById("es-label").value.trim(),
+    asset_class:document.getElementById("es-class").value,
+    amount:     document.getElementById("es-amount").value,
+    type:       document.getElementById("es-type").value,
+    date:       document.getElementById("es-date").value,
+    note:       document.getElementById("es-note").value.trim(),
+    currency:   document.getElementById("es-currency")?.value || "KES",
+  };
+  const d = await api("PUT",`/api/savings/${id}`,payload);
+  if (d.ok) { closeModal("edit-saving-modal"); toast("Entry updated ✓"); loadSavings(); loadOverview(); }
+}
+
+async function deleteSaving(id) {
+  if (!confirm("Delete this entry?")) return;
+  const d = await api("DELETE",`/api/savings/${id}`);
+  if (d.ok) { toast("Deleted."); loadSavings(); loadOverview(); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PORTFOLIO REVIEW
+══════════════════════════════════════════════════════════════════════════ */
+async function loadReview() {
+  const d = await api("GET","/api/portfolio/review");
+  renderReview(d.review);
+}
+
+function renderReview(r) {
+  const el = document.getElementById("review-content");
+  if (!el) return;
+  if (!r) { el.innerHTML=`<div class="panel" style="text-align:center;padding:2.5rem"><p style="font-family:var(--font-serif);font-size:1.2rem;font-weight:300;margin-bottom:.6rem">No review yet</p><p style="color:var(--text2);font-size:.86rem">Click Generate Review for your first Friday analysis.</p></div>`; return; }
+  const signals = (r.stock_analysis||[]).map(s=>`<div class="signal-item"><div><div class="signal-ticker">${s.ticker} <span class="signal-exch">${s.exchange}</span></div></div><span class="signal-badge sig-${s.signal}">${s.signal}</span><span class="signal-note">${s.reasoning||""}</span></div>`).join("");
+  const divs    = (r.dividend_calendar||[]).map(d=>`<div class="div-row"><span class="div-ticker">${d.ticker} <span style="color:var(--text3);font-size:.7rem">${d.exchange}</span></span><span class="div-date">${d.expected_date}</span><span class="div-yield">${d.estimated_yield||"—"} · ${d.amount_hint||""}</span></div>`).join("");
+  const adds    = (r.add_recommendations||[]).map(rec=>`<div class="rec-item add"><span class="rec-priority pri-${rec.priority||"MEDIUM"}">${rec.priority||"MED"}</span><div><div class="rec-asset">${rec.asset}</div><div class="rec-reason">${rec.reason}</div><div class="rec-action">${rec.action}</div></div></div>`).join("");
+  const trims   = (r.trim_recommendations||[]).map(rec=>`<div class="rec-item trim"><span class="rec-priority pri-${rec.priority||"MEDIUM"}">${rec.priority||"MED"}</span><div><div class="rec-asset">${rec.asset}</div><div class="rec-reason">${rec.reason}</div><div class="rec-action">${rec.action}</div></div></div>`).join("");
+  const watches = (r.watchlist||[]).map(w=>`<div class="rec-item watch"><div style="flex:1"><div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.3rem"><span style="font-family:var(--font-mono);color:var(--blue)">${w.ticker} <span style="color:var(--text3)">${w.exchange}</span></span><span style="font-family:var(--font-mono);font-size:.72rem;color:var(--gold)">${w.entry_range||""}</span></div><div class="rec-reason">${w.reason}</div><div class="rec-action">${w.thesis||""}</div></div></div>`).join("");
+  el.innerHTML=`<div class="review-card">
+    <div class="review-header"><div><div class="review-date">Review · ${fmtDate(r.date)}</div><div class="review-headline">${r.week_summary||"Portfolio Review"}</div></div><span class="rating-badge rating-${r.overall_rating||"NEUTRAL"}">${r.overall_rating||"NEUTRAL"}</span></div>
+    <div class="review-body">
+      <div class="review-section"><div class="review-section-title">Performance Summary</div><div class="review-perf">${r.performance_summary||"—"}</div></div>
+      ${signals?`<div class="review-section"><div class="review-section-title">Stock Signals</div><div class="signal-grid">${signals}</div></div>`:""}
+      ${divs?`<div class="review-section"><div class="review-section-title">Dividend Calendar</div>${divs}</div>`:""}
+      ${adds?`<div class="review-section"><div class="review-section-title">What to Add ↑</div><div class="rec-list">${adds}</div></div>`:""}
+      ${trims?`<div class="review-section"><div class="review-section-title">What to Trim ↓</div><div class="rec-list">${trims}</div></div>`:""}
+      ${watches?`<div class="review-section"><div class="review-section-title">Watchlist — Not Yet Owned</div><div class="rec-list">${watches}</div></div>`:""}
+    </div></div>`;
+}
+
+// ── 7-Agent Review Pipeline ──────────────────────────────────────────────────
+let _pollTimer  = null;
+let _activeJobId = null;
+
+const AGENT_META = {
+  performance: { icon:"📊", name:"Performance Analyst",   desc:"Metrics, returns, winners & losers" },
+  rebalancing: { icon:"⚖️", name:"Rebalancing Advisor",   desc:"Allocation & rebalancing actions" },
+  analyst:     { icon:"🔍", name:"Analyst Intelligence",  desc:"Ratings, targets, hot picks" },
+  thematic:    { icon:"🌐", name:"Thematic Researcher",   desc:"10–30yr megatrends & opportunities" },
+  corporate:   { icon:"📅", name:"Corporate Actions",     desc:"Dividends, earnings, splits" },
+  verifier:    { icon:"✅", name:"Fact Verifier",          desc:"Cross-checks all findings" },
+  summary:     { icon:"✦",  name:"Executive Summary",     desc:"Actionable final report" },
+};
+
+async function startAgenticReview() {
+  const btn = document.getElementById("gen-review-btn");
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+
+  const r = await api("POST", "/api/portfolio/review", {});
+  if (r.error) {
+    if (r.error.includes("API key")) { switchTab("settings"); }
+    toast(r.error, "error");
+    btn.disabled = false; btn.textContent = "✦ Generate Review";
+    return;
+  }
+
+  _activeJobId = r.job_id;
+  btn.textContent = "Running…";
+
+  // Show pipeline
+  const pipeline = document.getElementById("agent-pipeline");
+  pipeline.style.display = "block";
+  renderPipeline({});
+
+  // Start polling
+  if (_pollTimer) clearInterval(_pollTimer);
+  _pollTimer = setInterval(() => pollReview(_activeJobId), 3000);
+}
+
+async function pollReview(jobId) {
+  const job = await api("GET", `/api/portfolio/review/poll/${jobId}`);
+  if (job.error) return;
+
+  const agents = job.agents || {};
+  renderPipeline(agents);
+
+  if (job.status === "completed") {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+    document.getElementById("gen-review-btn").disabled = false;
+    document.getElementById("gen-review-btn").textContent = "✦ Generate Review";
+    document.getElementById("pipeline-note").textContent = "✓ Complete — " +
+      new Date(agents._finished_at || "").toLocaleTimeString();
+
+    // Render full review
+    const summary = agents.summary?.result || {};
+    renderAgenticReview(agents, summary);
+  }
+}
+
+function renderPipeline(agents) {
+  const track = document.getElementById("pipeline-track");
+  if (!track) return;
+  const order = ["performance","rebalancing","analyst","thematic","corporate","verifier","summary"];
+  track.innerHTML = order.map(id => {
+    const a    = agents[id] || {};
+    const meta = AGENT_META[id] || {};
+    const st   = a.status || "waiting";
+    const cls  = st === "done" ? "agent-done" : st === "running" ? "agent-running" : st === "error" ? "agent-err" : "agent-wait";
+    const spin = st === "running" ? '<span class="agent-spinner"></span>' : "";
+    return `<div class="agent-step ${cls}">
+      <div class="agent-step-icon">${meta.icon}${spin}</div>
+      <div class="agent-step-info">
+        <div class="agent-step-name">${meta.name}</div>
+        <div class="agent-step-desc">${st === "error" ? (a.error||"Error") : meta.desc}</div>
+      </div>
+      <div class="agent-step-status">
+        ${st==="done"?"✓":st==="running"?"…":st==="error"?"✗":"·"}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderAgenticReview(agents, summary) {
+  const wrap = document.getElementById("review-content");
+  const date = new Date().toLocaleDateString("en-KE",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+
+  // Rating colour
+  const RATING_COLOR = {STRONG:"var(--green)",GOOD:"var(--green)",NEUTRAL:"var(--gold2)",CAUTION:"var(--gold)",REVIEW:"var(--red)"};
+  const ratingColor  = RATING_COLOR[summary.overall_rating] || "var(--gold2)";
+
+  // Top actions
+  const actions = (summary.top_3_actions||[]).map((a,i) => `
+    <div class="action-row">
+      <div class="action-num">${i+1}</div>
+      <div class="action-body">
+        <div class="action-title">${a.action}</div>
+        <div class="action-rationale">${a.rationale}</div>
+      </div>
+      <span class="urgency-badge ${a.urgency==='NOW'?'badge-err':a.urgency==='THIS_WEEK'?'badge-warn':'badge-info'}">${a.urgency}</span>
+    </div>`).join("");
+
+  // Watchlist
+  const watchlist = (summary.watchlist||[]).map(w => `
+    <tr>
+      <td class="wht mo">${w.ticker}</td>
+      <td class="hide-xs"><span class="hc-exchange-badge">${w.exchange}</span></td>
+      <td>${w.reason}</td>
+      <td class="hide-sm" style="color:var(--gold2)">${w.entry_range||"—"}</td>
+      <td class="hide-sm" style="color:var(--text2)">${w.time_horizon||"—"}</td>
+    </tr>`).join("");
+
+  // Analyst views
+  const perf    = agents.performance?.result || {};
+  const reb     = agents.rebalancing?.result || {};
+  const analyst = agents.analyst?.result || {};
+  const thematic = agents.thematic?.result || {};
+  const corp    = agents.corporate?.result || {};
+  const verifier = agents.verifier?.result || {};
+
+  wrap.innerHTML = `
+    <!-- Executive Summary -->
+    <div class="panel review-panel">
+      <div class="review-kpi-row">
+        <div>
+          <div class="review-headline">${summary.headline || "Weekly Portfolio Review"}</div>
+          <div style="color:var(--text2);font-size:.9rem;margin-top:.4rem">${date}</div>
+        </div>
+        <div class="rating-badge" style="border-color:${ratingColor};color:${ratingColor}">
+          ${summary.overall_rating || "—"}
+        </div>
+      </div>
+      <p class="review-summary-text">${summary.executive_summary || ""}</p>
+      ${summary.kes_impact_note ? `<div class="review-fx-note">💱 ${summary.kes_impact_note}</div>` : ""}
+    </div>
+
+    <!-- Top 3 Actions -->
+    ${actions ? `<div class="panel">
+      <div class="panel-title">Top Actions This Week</div>
+      <div class="actions-list">${actions}</div>
+    </div>` : ""}
+
+    <!-- Performance + Rebalancing -->
+    <div class="review-grid-2">
+      <div class="panel">
+        <div class="panel-title">📊 Performance — ${perf.overall_rating||""}</div>
+        <p style="font-size:.84rem;color:var(--text2)">${perf.performance_commentary||""}</p>
+        ${(perf.top_performers||[]).length ? `
+          <div style="margin-top:.8rem">
+            <div class="review-sub">Top Performers</div>
+            ${perf.top_performers.map(h=>`<div class="perf-row pos">
+              <span class="mo">${h.ticker}</span>
+              <span style="color:var(--green)">${h.return_pct>0?"+":""}${h.return_pct}%</span>
+              <span style="color:var(--text3);font-size:.75rem">${h.note}</span>
+            </div>`).join("")}
+          </div>` : ""}
+        ${(perf.underperformers||[]).length ? `
+          <div style="margin-top:.8rem">
+            <div class="review-sub">Underperformers</div>
+            ${perf.underperformers.map(h=>`<div class="perf-row neg">
+              <span class="mo">${h.ticker}</span>
+              <span style="color:var(--red)">${h.return_pct}%</span>
+              <span style="color:var(--text3);font-size:.75rem">${h.note}</span>
+            </div>`).join("")}
+          </div>` : ""}
+      </div>
+      <div class="panel">
+        <div class="panel-title">⚖️ Rebalancing — ${reb.overall_balance||""}</div>
+        <p style="font-size:.84rem;color:var(--text2)">${reb.rebalancing_summary||""}</p>
+        ${(reb.rebalancing_actions||[]).length ? `
+          <div style="margin-top:.8rem">
+            ${reb.rebalancing_actions.map(a=>`<div class="reb-row">
+              <span class="reb-action ${a.action==="BUY"||a.action==="ADD"?"pos":a.action==="SELL"||a.action==="TRIM"?"neg":""}">${a.action}</span>
+              <span class="mo" style="color:var(--text)">${a.ticker||a.asset_class_or_sector||""}</span>
+              <span style="color:var(--text3);font-size:.78rem">${a.rationale}</span>
+            </div>`).join("")}
+          </div>` : ""}
+      </div>
+    </div>
+
+    <!-- Analyst Views -->
+    <div class="panel">
+      <div class="panel-title">🔍 Analyst Intelligence</div>
+      ${(analyst.analyst_views||[]).length ? `
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Consensus</th><th>Target</th><th>Upside</th><th class="hide-sm">Thesis</th></tr></thead>
+            <tbody>${analyst.analyst_views.map(a=>`<tr>
+              <td class="wht mo">${a.ticker}</td>
+              <td class="hide-xs"><span class="hc-exchange-badge">${a.exchange}</span></td>
+              <td><span class="consensus-badge ${a.consensus}">${a.consensus}</span></td>
+              <td class="mo" style="color:var(--gold2)">${a.avg_price_target||"—"}</td>
+              <td class="mo ${(a.upside_pct||0)>=0?'pos':'neg'}">${a.upside_pct?a.upside_pct+"%":"—"}</td>
+              <td class="hide-sm" style="font-size:.76rem;color:var(--text2)">${a.key_thesis||""}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>` : "<p class='empty-msg'>No analyst data fetched.</p>"}
+      ${(analyst.hot_picks||[]).length ? `
+        <div style="margin-top:1.2rem">
+          <div class="review-sub">Hot Picks</div>
+          ${analyst.hot_picks.map(p=>`<div class="pick-row">
+            <span class="mo wht">${p.ticker}</span>
+            <span class="hc-exchange-badge hide-xs">${p.exchange}</span>
+            <span style="color:var(--gold2)">${p.rating}</span>
+            <span style="color:var(--text2);font-size:.78rem">${p.thesis}</span>
+          </div>`).join("")}
+        </div>` : ""}
+    </div>
+
+    <!-- Corporate Actions -->
+    <div class="panel">
+      <div class="panel-title">📅 Corporate Actions</div>
+      ${(corp.key_dates_next_30_days||[]).length ? `
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Date</th><th>Ticker</th><th>Event</th><th class="hide-sm">Importance</th></tr></thead>
+            <tbody>${corp.key_dates_next_30_days.map(e=>`<tr>
+              <td class="mo">${e.date}</td>
+              <td class="wht mo">${e.ticker}</td>
+              <td style="font-size:.8rem">${e.event}</td>
+              <td class="hide-sm"><span class="${e.importance==='HIGH'?'badge-err':e.importance==='MEDIUM'?'badge-warn':'badge-info'}">${e.importance}</span></td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>` : ""}
+      ${(corp.dividends||[]).length ? `
+        <div style="margin-top:1rem">
+          <div class="review-sub">Dividends</div>
+          ${corp.dividends.map(d=>`<div class="contrib-row">
+            <span class="mo wht">${d.ticker}</span>
+            <span style="color:var(--gold2)">${d.currency} ${d.declared_amount}</span>
+            <span style="color:var(--text3);font-size:.75rem">Ex: ${d.ex_date||"—"} · Pay: ${d.payment_date||"—"}</span>
+            ${d.yield_pct?`<span style="color:var(--green);font-family:var(--font-mono);font-size:.72rem">${d.yield_pct}% yield</span>`:""}
+          </div>`).join("")}
+        </div>` : ""}
+    </div>
+
+    <!-- Thematic -->
+    <div class="panel">
+      <div class="panel-title">🌐 Thematic Opportunities (10–30yr)</div>
+      <p style="font-size:.84rem;color:var(--text2)">${thematic.thematic_summary||""}</p>
+      <div class="thematic-grid">
+        ${(thematic.megatrends||[]).map(t=>`
+          <div class="theme-card">
+            <div class="theme-head">
+              <span class="theme-name">${t.theme}</span>
+              <span class="theme-horizon">${t.horizon}</span>
+              <span class="${t.conviction==='HIGH'?'badge-ok':t.conviction==='MEDIUM'?'badge-warn':'badge-info'}">${t.conviction}</span>
+            </div>
+            <p style="font-size:.78rem;color:var(--text2);margin:.4rem 0">${t.rationale}</p>
+            <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--text3)">Exposure: ${t.current_exposure}</div>
+            ${(t.instruments||[]).map(i=>`<div class="theme-instrument">
+              <span class="mo wht">${i.ticker}</span>
+              <span class="hc-exchange-badge">${i.exchange}</span>
+              <span style="font-size:.72rem;color:var(--text2)">${i.why}</span>
+            </div>`).join("")}
+          </div>`).join("")}
+      </div>
+    </div>
+
+    <!-- Verifier note -->
+    ${verifier.verifier_note ? `
+    <div class="panel" style="border-color:rgba(92,158,106,.3);background:rgba(92,158,106,.04)">
+      <div class="panel-title" style="color:var(--green)">✅ Verification Complete</div>
+      <p style="font-size:.82rem;color:var(--text2)">${verifier.verifier_note}</p>
+      <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);margin-top:.5rem">
+        Confidence: ${verifier.overall_confidence||"—"} ·
+        ${Object.entries(verifier.reliability_scores||{}).map(([k,v])=>`${k}: ${v}`).join(" · ")}
+      </div>
+    </div>` : ""}
+
+    <!-- Watchlist + Risks + Next focus -->
+    <div class="review-grid-2">
+      <div class="panel">
+        <div class="panel-title">Watchlist</div>
+        ${watchlist ? `<div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Reason</th><th class="hide-sm">Entry</th><th class="hide-sm">Horizon</th></tr></thead>
+          <tbody>${watchlist}</tbody></table></div>` : "<p class='empty-msg'>No watchlist items.</p>"}
+      </div>
+      <div class="panel">
+        <div class="panel-title">Risks & Opportunities</div>
+        ${(summary.risks_to_watch||[]).length ? `
+          <div class="review-sub" style="color:var(--red)">Risks</div>
+          ${summary.risks_to_watch.map(r=>`<div style="font-size:.82rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">⚠ ${r}</div>`).join("")}` : ""}
+        ${(summary.opportunities||[]).length ? `
+          <div class="review-sub" style="color:var(--green);margin-top:.8rem">Opportunities</div>
+          ${summary.opportunities.map(o=>`<div style="font-size:.82rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">✦ ${o}</div>`).join("")}` : ""}
+        ${summary.next_review_focus ? `
+          <div style="margin-top:1rem;font-size:.78rem;color:var(--text3);font-family:var(--font-mono)">
+            Next week: ${summary.next_review_focus}
+          </div>` : ""}
+      </div>
+    </div>
+  `;
+
+  const dateEl = document.getElementById("review-last-date");
+  if (dateEl) dateEl.textContent = "Last: " + new Date().toLocaleDateString();
+}
+
+async function loadReview() {
+  const raw = await api("GET", "/api/portfolio/review");
+  if (!raw || !raw.review) return;
+  const rev = raw.review;
+  if (rev.agentic && rev.agents) {
+    renderAgenticReview(
+      Object.fromEntries(
+        Object.entries(rev.agents).map(([k,v]) => [k, {status:"done",result:v}])
+      ),
+      rev.agents.summary || rev
+    );
+    const dateEl = document.getElementById("review-last-date");
+    if (dateEl && rev.date) dateEl.textContent = "Last: " + rev.date;
+  }
+}
+
 async function loadFxRates() {
   const statusEl = document.getElementById("fx-status");
   const tableEl  = document.getElementById("fx-table-wrap");

@@ -8,6 +8,7 @@ from routes.upload_lots import bp as upload_bp
 from routes.subscriptions import bp as sub_bp
 from routes.habits import bp as habits_bp
 from routes.cron import bp as cron_bp
+from routes.goals import bp as goals_bp, GOAL_CATEGORIES, GOAL_ICONS
 from services.tickers import seed_tickers, CURRENCIES
 
 app = Flask(__name__)
@@ -23,6 +24,7 @@ app.register_blueprint(sub_bp)
 app.register_blueprint(upload_bp)
 app.register_blueprint(habits_bp)
 app.register_blueprint(cron_bp)
+app.register_blueprint(goals_bp)
 
 # Init DB + seed tickers
 init_db()
@@ -69,6 +71,16 @@ def habits_page():
     return render_template("habits.html",
                            categories=HABIT_CATEGORIES,
                            icons=HABIT_ICONS)
+
+@main_bp.route("/goals")
+@approved_required
+def goals_page():
+    from routes.goals import GOAL_CATEGORIES, GOAL_ICONS
+    currencies = ["KES","USD","GBP","EUR","ZAR","TZS","UGX","GHS","HKD","Other"]
+    return render_template("goals.html",
+                           categories=GOAL_CATEGORIES,
+                           icons=GOAL_ICONS,
+                           currencies=currencies)
 
 app.register_blueprint(main_bp)
 

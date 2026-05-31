@@ -1148,3 +1148,82 @@ input, select, button { font-family: var(--font-body); font-size: .95rem; }
 }
 .ld-label { color: var(--text3); font-family: var(--font-mono); font-size: .68rem; }
 .ld-val   { color: var(--text); font-weight: 400; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AGENTIC REVIEW
+═══════════════════════════════════════════════════════════════════════════ */
+.review-header { display:flex;justify-content:space-between;align-items:flex-start;margin:1.2rem 0 1rem;flex-wrap:wrap;gap:.8rem; }
+
+/* Pipeline track */
+.pipeline-title { font-family:var(--font-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:.9rem; }
+.pipeline-track { display:flex;flex-direction:column;gap:.5rem; }
+
+.agent-step { display:grid;grid-template-columns:42px 1fr 24px;gap:.7rem;align-items:center;padding:.55rem .8rem;border-radius:9px;border:1px solid var(--border);background:var(--bg3); }
+.agent-wait    { opacity:.5; }
+.agent-running { border-color:var(--gold);background:rgba(201,168,76,.06); }
+.agent-done    { border-color:rgba(92,158,106,.4);background:rgba(92,158,106,.05); }
+.agent-err     { border-color:rgba(192,86,78,.4);background:rgba(192,86,78,.05); }
+
+.agent-step-icon { font-size:1.3rem;text-align:center;position:relative; }
+.agent-step-name { font-size:.84rem;color:var(--text); }
+.agent-step-desc { font-size:.7rem;color:var(--text3);margin-top:.1rem; }
+.agent-step-status { font-family:var(--font-mono);font-size:.82rem;text-align:center;color:var(--text3); }
+.agent-done .agent-step-status { color:var(--green); }
+.agent-err  .agent-step-status { color:var(--red); }
+
+.agent-spinner { display:inline-block;width:10px;height:10px;border:2px solid var(--gold);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;position:absolute;top:-4px;right:-4px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* Review content */
+.review-panel { }
+.review-kpi-row { display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem; }
+.review-headline { font-family:var(--font-serif);font-size:1.3rem;font-weight:300;color:var(--text); }
+.rating-badge { font-family:var(--font-mono);font-size:.7rem;border:2px solid;border-radius:8px;padding:.3rem .7rem;white-space:nowrap;align-self:flex-start; }
+.review-summary-text { font-size:.9rem;color:var(--text2);line-height:1.6;margin:0; }
+.review-fx-note { font-family:var(--font-mono);font-size:.72rem;color:var(--text3);margin-top:.8rem;padding:.5rem .8rem;background:var(--bg3);border-radius:6px; }
+.review-sub { font-family:var(--font-mono);font-size:.65rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:.4rem; }
+
+.review-grid-2 { display:grid;grid-template-columns:1fr;gap:1rem; }
+@media(min-width:640px) { .review-grid-2 { grid-template-columns:1fr 1fr; } }
+
+/* Actions */
+.actions-list { display:flex;flex-direction:column;gap:.6rem; }
+.action-row { display:flex;align-items:flex-start;gap:.8rem;padding:.65rem;background:var(--bg3);border-radius:9px; }
+.action-num { font-family:var(--font-mono);font-size:.72rem;width:20px;height:20px;border-radius:50%;background:var(--gold);color:var(--bg);display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0; }
+.action-body { flex:1;min-width:0; }
+.action-title { font-size:.88rem;color:var(--text);margin-bottom:.2rem; }
+.action-rationale { font-size:.76rem;color:var(--text2); }
+.urgency-badge { font-family:var(--font-mono);font-size:.6rem;padding:.18rem .5rem;border-radius:5px;white-space:nowrap;align-self:flex-start;flex-shrink:0; }
+
+/* Performance rows */
+.perf-row { display:flex;align-items:center;gap:.8rem;padding:.35rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap; }
+.reb-row { display:flex;align-items:center;gap:.7rem;padding:.35rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap; }
+.reb-action { font-family:var(--font-mono);font-size:.7rem;padding:.15rem .4rem;border-radius:4px;font-weight:600; }
+.reb-action.pos { background:rgba(92,158,106,.15);color:var(--green); }
+.reb-action.neg { background:rgba(192,86,78,.1);color:var(--red); }
+
+/* Consensus */
+.consensus-badge { font-family:var(--font-mono);font-size:.65rem;padding:.15rem .4rem;border-radius:4px; }
+.consensus-badge.BUY  { background:rgba(92,158,106,.15);color:var(--green); }
+.consensus-badge.HOLD { background:rgba(201,168,76,.12);color:var(--gold); }
+.consensus-badge.SELL { background:rgba(192,86,78,.1);color:var(--red); }
+.consensus-badge.MIXED{ background:var(--bg3);color:var(--text3); }
+
+/* Hot picks */
+.pick-row { display:flex;align-items:center;gap:.7rem;padding:.4rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap; }
+
+/* Thematic */
+.thematic-grid { display:grid;grid-template-columns:1fr;gap:.9rem;margin-top:1rem; }
+@media(min-width:640px) { .thematic-grid { grid-template-columns:1fr 1fr; } }
+.theme-card { background:var(--bg3);border:1px solid var(--border);border-radius:12px;padding:1rem; }
+.theme-head { display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem; }
+.theme-name { font-size:.9rem;color:var(--text);font-weight:400; }
+.theme-horizon { font-family:var(--font-mono);font-size:.62rem;color:var(--text3);background:var(--bg2);border:1px solid var(--border);padding:.1rem .35rem;border-radius:4px; }
+.theme-instrument { display:flex;align-items:center;gap:.5rem;padding:.25rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap; }
+
+/* ── Anomaly rows ─────────────────────────────────────────────────────────── */
+.anomaly-row { border:1px solid rgba(201,168,76,.3);border-radius:9px;padding:.8rem 1rem;margin-bottom:.6rem;background:rgba(201,168,76,.04); }
+.anomaly-head { display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem; }
+.anomaly-ticker { display:flex;align-items:center;gap:.5rem;flex-wrap:wrap; }
+.anomaly-actions{ display:flex;gap:.4rem;flex-wrap:wrap; }
+.anomaly-detail { display:flex;align-items:center;gap:1rem;flex-wrap:wrap;font-size:.8rem;font-family:var(--font-mono);color:var(--text2); }

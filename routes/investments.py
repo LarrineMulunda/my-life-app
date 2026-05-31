@@ -10,6 +10,8 @@ from flask import Blueprint, request, jsonify, Response
 from flask_login import current_user
 from db import get_db, cfg_get, cfg_set, ph, is_pg, upsert_snapshot_sql
 from services.gemini import fetch_prices, fetch_fx_rates, generate_review
+from services import agents as _agents
+from services import price_agents as _price_agents
 from services.secrets import get_gemini_key, save_gemini_key_to_secret
 from routes.auth import approved_required
 
@@ -592,6 +594,7 @@ def delete_sale(sid):
 @bp.route("/api/stocks/fetch-prices", methods=["POST"])
 @approved_required
 def fetch_prices_ai():
+    """3-Agent price pipeline: Fetch → Anomaly Check → Review."""
     d       = request.json or {}
     api_key = d.get("api_key") or get_gemini_key(uid())
     if d.get("api_key"):
@@ -601,102 +604,77 @@ def fetch_prices_ai():
     if not api_key:
         return jsonify({"error": "No Gemini API key — add it in Settings"}), 400
 
-    today    = _today()
-    force    = d.get("force", False)   # if True, re-fetch even if updated today
-    conn     = get_db()
-
+    today = _today()
+    force = d.get("force", False)
+    conn  = get_db()
     try:
-        # GLOBAL: every active position across ALL users — one fetch serves everyone
         all_positions = _fetchall(conn, """
             SELECT DISTINCT ticker, COALESCE(exchange,'NSE') as exchange
-            FROM stock_lots
-            WHERE shares > 0
+            FROM stock_lots WHERE shares > 0
         """)
-
         if not all_positions:
             return jsonify({"error": "No active positions in any portfolio"}), 400
 
-        if force:
-            to_fetch = all_positions
-            skipped  = []
+        if not force:
+            existing = {(e["ticker"], e["exchange"])
+                        for e in _fetchall(conn, f"""
+                SELECT DISTINCT ticker, exchange FROM global_prices WHERE date={p()}
+            """, (today,))}
+            skipped       = [t for t in all_positions if (t["ticker"],t["exchange"]) in existing]
+            all_positions = [t for t in all_positions if (t["ticker"],t["exchange"]) not in existing]
         else:
-            # Only fetch tickers not already in global_prices for today
-            already_today = set()
-            existing = _fetchall(conn, f"""
-                SELECT DISTINCT ticker, exchange
-                FROM global_prices
-                WHERE date={p()}
-            """, (today,))
-            for e in existing:
-                already_today.add((e["ticker"], e["exchange"]))
+            skipped = []
 
-            to_fetch = [t for t in all_positions
-                        if (t["ticker"], t["exchange"]) not in already_today]
-            skipped  = [t for t in all_positions
-                        if (t["ticker"], t["exchange"]) in already_today]
-    finally:
-        conn.close()
+        if not all_positions:
+            return jsonify({
+                "ok": True, "agents": None,
+                "skipped": [t["ticker"] for t in skipped],
+                "message": f"All {len(skipped)} tickers already updated today.",
+                "date": today,
+            })
 
-    if not to_fetch:
-        return jsonify({
-            "ok":      True,
-            "saved":   [],
-            "skipped": [t["ticker"] for t in skipped],
-            "message": f"All {len(skipped)} tickers already have prices for today.",
-            "date":    today,
-        })
-
-    try:
-        prices = fetch_prices(api_key, to_fetch)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-    saved = []
-    conn  = get_db()
-    try:
-        for tkr, price in prices.items():
-            # find exchange/currency from any lot holding this ticker
+        # Enrich positions with currency info
+        enriched = []
+        for t in all_positions:
             row = _fetchone(conn, f"""
                 SELECT COALESCE(exchange,'NSE') as exchange, currency
-                FROM stock_lots
-                WHERE UPPER(ticker)={p()} LIMIT 1
-            """, (tkr,))
-            exch = row["exchange"] if row else "NSE"
-            cur  = (row.get("currency") or EXCUR.get(exch, "KES")) if row else "KES"
-            # UPSERT into GLOBAL prices table
-            if is_pg():
-                _exec(conn, """
-                    INSERT INTO global_prices (ticker,exchange,price,currency,date,note)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT(ticker,exchange,date) DO UPDATE SET
-                        price=EXCLUDED.price, currency=EXCLUDED.currency,
-                        note=EXCLUDED.note
-                """, (tkr, exch, price, cur, today, "Auto-fetched via Gemini AI"))
-            else:
-                _exec(conn, """
-                    INSERT OR REPLACE INTO global_prices
-                        (ticker,exchange,price,currency,date,note)
-                    VALUES (?,?,?,?,?,?)
-                """, (tkr, exch, price, cur, today, "Auto-fetched via Gemini AI"))
-            saved.append({"ticker": tkr, "exchange": exch, "price": price})
-        conn.commit()
+                FROM stock_lots WHERE UPPER(ticker)={p()} LIMIT 1
+            """, (t["ticker"],))
+            enriched.append({
+                "ticker":   t["ticker"],
+                "exchange": t["exchange"],
+                "currency": (row.get("currency") or EXCUR.get(t["exchange"],"KES")) if row else "KES",
+            })
+
+        # 3-agent pipeline — keeps conn open internally
+        result = _price_agents.run_price_pipeline(api_key, enriched, conn)
+
     finally:
         conn.close()
 
     _save_snapshot()
     return jsonify({
-        "ok":      True,
-        "saved":   saved,
-        "skipped": [t["ticker"] for t in skipped],
-        "date":    today,
+        "ok":            True,
+        "date":          today,
+        "written":       result["written"],
+        "skipped":       [t["ticker"] for t in skipped],
+        "agents": {
+            "agent1": result["agent1"],
+            "agent2": result["agent2"],
+            "agent3": result["agent3"],
+        },
+        "anomalies":     result.get("anomalies", []),
+        "manual_review": result.get("manual_review", []),
+        "errors":        result.get("errors", []),
         "message": (
-            f"Fetched {len(saved)} ticker(s)"
-            + (f", skipped {len(skipped)} already updated today." if skipped else ".")
+            f"Agent pipeline: {result['written']} prices written"
+            + (f", {result['agent2'].get('flagged',0)} flagged"
+               if result['agent2'].get('flagged') else "")
+            + (f", {result['agent3'].get('manual_review',0)} need manual review"
+               if result['agent3'].get('manual_review') else "")
+            + (f", {len(skipped)} already up-to-date" if skipped else "")
         ),
     })
-
-
-# ── FX rate fetch ─────────────────────────────────────────────────────────────
 
 @bp.route("/api/fx-rates/fetch", methods=["POST"])
 @approved_required
@@ -705,18 +683,27 @@ def fetch_fx_rates_endpoint():
     api_key = get_gemini_key(uid())
     if not api_key:
         return jsonify({"error": "No Gemini API key — add it in Settings"}), 400
+    # Run 3-agent FX pipeline
+    conn = get_db()
     try:
-        rates = fetch_fx_rates(api_key)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        result = _price_agents.run_fx_pipeline(api_key, conn)
+    finally:
+        conn.close()
 
-    # Store to GLOBAL fx table — shared by all users
-    from db import fx_set
-    today = _today()
-    for currency, rate in rates.items():
-        if currency != "KES":
-            fx_set(currency, rate, today)
-    return jsonify({"ok": True, "rates": rates, "date": today})
+    return jsonify({
+        "ok":            True,
+        "date":          result["date"],
+        "rates":         result["agent1"].get("rates", {}),
+        "written":       result["written"],
+        "agents":        {
+            "agent1": result["agent1"],
+            "agent2": result["agent2"],
+            "agent3": result["agent3"],
+        },
+        "anomalies":     result.get("anomalies", []),
+        "manual_review": result.get("manual_review", []),
+        "errors":        result.get("errors", []),
+    })
 
 @bp.route("/api/fx-rates")
 @approved_required
@@ -738,6 +725,120 @@ def get_fx_rates_endpoint():
     finally:
         conn2.close()
     return jsonify({"rates": rates, "as_of": str(fx_date) if fx_date else "—"})
+
+
+@bp.route("/api/prices/anomalies")
+@approved_required
+def get_anomalies():
+    """Return recent price anomalies for review."""
+    conn = get_db()
+    try:
+        from datetime import date as _date
+        rows = _fetchall(conn, f"""
+            SELECT * FROM price_anomalies
+            ORDER BY created_at DESC LIMIT 100
+        """)
+    finally:
+        conn.close()
+    # Convert timestamps
+    for r in rows:
+        for k in ("created_at","resolved_at"):
+            if r.get(k):
+                r[k] = str(r[k])[:19]
+    pending  = [r for r in rows if r["status"] == "manual_review"]
+    resolved = [r for r in rows if r["status"] != "manual_review"]
+    return jsonify({
+        "pending":  pending,
+        "resolved": resolved,
+        "total":    len(rows),
+    })
+
+@bp.route("/api/prices/anomalies/<int:aid>/resolve", methods=["POST"])
+@approved_required
+def resolve_anomaly(aid):
+    """Manually resolve an anomaly — accept, correct, or dismiss."""
+    d = request.json or {}
+    action = d.get("action")  # "accept", "correct", "dismiss"
+    if action not in ("accept","correct","dismiss"):
+        return jsonify({"error":"action must be accept|correct|dismiss"}), 400
+
+    conn = get_db()
+    try:
+        row = _fetchone(conn, f"SELECT * FROM price_anomalies WHERE id={p()}", (aid,))
+        if not row:
+            return jsonify({"error":"Not found"}), 404
+
+        now = datetime.now().isoformat()
+
+        if action == "dismiss":
+            _exec(conn, f"""
+                UPDATE price_anomalies
+                SET status='dismissed', review_note={p()}, resolved_at={p()}
+                WHERE id={p()}
+            """, (d.get("note","Dismissed by user"), now, aid))
+
+        elif action == "accept":
+            price = float(row["fetched_value"])
+            today = _today()
+            if row["type"] == "fx":
+                if is_pg():
+                    _exec(conn, """INSERT INTO global_fx (currency,kes_rate,updated_date)
+                        VALUES (%s,%s,%s) ON CONFLICT(currency) DO UPDATE SET
+                        kes_rate=EXCLUDED.kes_rate,updated_date=EXCLUDED.updated_date""",
+                        (row["ticker"], price, today))
+                else:
+                    _exec(conn, "INSERT OR REPLACE INTO global_fx (currency,kes_rate,updated_date) VALUES (?,?,?)",
+                        (row["ticker"], price, today))
+            else:
+                exch = row.get("exchange","NSE")
+                cur  = row.get("currency","KES")
+                if is_pg():
+                    _exec(conn, """INSERT INTO global_prices (ticker,exchange,price,currency,date,note)
+                        VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(ticker,exchange,date) DO UPDATE SET
+                        price=EXCLUDED.price,note=EXCLUDED.note""",
+                        (row["ticker"],exch,price,cur,today,"Manually accepted anomaly"))
+                else:
+                    _exec(conn, "INSERT OR REPLACE INTO global_prices (ticker,exchange,price,currency,date,note) VALUES (?,?,?,?,?,?)",
+                        (row["ticker"],exch,price,cur,today,"Manually accepted anomaly"))
+            _exec(conn, f"UPDATE price_anomalies SET status='accepted',resolved_at={p()} WHERE id={p()}",
+                  (now, aid))
+
+        elif action == "correct":
+            corrected = d.get("price")
+            if not corrected:
+                return jsonify({"error":"Provide corrected price"}), 400
+            corrected = float(corrected)
+            today = _today()
+            if row["type"] == "fx":
+                if is_pg():
+                    _exec(conn, """INSERT INTO global_fx (currency,kes_rate,updated_date)
+                        VALUES (%s,%s,%s) ON CONFLICT(currency) DO UPDATE SET
+                        kes_rate=EXCLUDED.kes_rate,updated_date=EXCLUDED.updated_date""",
+                        (row["ticker"], corrected, today))
+                else:
+                    _exec(conn, "INSERT OR REPLACE INTO global_fx (currency,kes_rate,updated_date) VALUES (?,?,?)",
+                        (row["ticker"], corrected, today))
+            else:
+                exch = row.get("exchange","NSE")
+                cur  = row.get("currency","KES")
+                if is_pg():
+                    _exec(conn, """INSERT INTO global_prices (ticker,exchange,price,currency,date,note)
+                        VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(ticker,exchange,date) DO UPDATE SET
+                        price=EXCLUDED.price,note=EXCLUDED.note""",
+                        (row["ticker"],exch,corrected,cur,today,"Manually corrected anomaly"))
+                else:
+                    _exec(conn, "INSERT OR REPLACE INTO global_prices (ticker,exchange,price,currency,date,note) VALUES (?,?,?,?,?,?)",
+                        (row["ticker"],exch,corrected,cur,today,"Manually corrected anomaly"))
+            _exec(conn, f"""UPDATE price_anomalies
+                SET status='corrected',reviewed_value={p()},
+                    review_note={p()},resolved_at={p()}
+                WHERE id={p()}""",
+                (corrected, d.get("note","Manual correction"), now, aid))
+
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok":True})
 
 
 # ── Portfolio snapshots ───────────────────────────────────────────────────────
@@ -906,6 +1007,22 @@ def get_review():
         return jsonify({"review": json.loads(raw)})
     except Exception:
         return jsonify({"review": None})
+
+@bp.route("/api/portfolio/review/poll/<job_id>")
+@approved_required
+def poll_review(job_id):
+    """Poll live agent progress for an agentic review job."""
+    job = _agents.get_job(job_id, uid())
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
+
+@bp.route("/api/portfolio/review/history")
+@approved_required
+def review_history():
+    """List recent review jobs for this user."""
+    jobs = _agents.list_jobs(uid(), limit=10)
+    return jsonify({"jobs": jobs})
 
 
 # ── Config / settings ─────────────────────────────────────────────────────────

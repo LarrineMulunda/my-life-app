@@ -143,6 +143,17 @@ CREATE TABLE IF NOT EXISTS global_fx (
     kes_rate NUMERIC(15,6) NOT NULL,
     updated_date DATE NOT NULL
 );
+CREATE TABLE IF NOT EXISTS price_anomalies (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    type TEXT NOT NULL DEFAULT 'price',
+    ticker TEXT, exchange TEXT, currency TEXT,
+    fetched_value NUMERIC(15,6) NOT NULL,
+    previous_value NUMERIC(15,6), pct_change NUMERIC(8,2),
+    status TEXT NOT NULL DEFAULT 'flagged',
+    reviewed_value NUMERIC(15,6),
+    review_note TEXT DEFAULT '',
+    created_at TIMESTAMP NOT NULL, resolved_at TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS habits (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -163,6 +174,48 @@ CREATE TABLE IF NOT EXISTS habit_logs (
     done BOOLEAN NOT NULL DEFAULT TRUE,
     note TEXT DEFAULT '',
     UNIQUE(habit_id, date)
+);
+CREATE TABLE IF NOT EXISTS review_jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'running',
+    started_at TIMESTAMP NOT NULL,
+    finished_at TIMESTAMP,
+    agents JSONB
+);
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT '🎯',
+    color TEXT DEFAULT '#C9A84C',
+    category TEXT DEFAULT 'General',
+    target_amount NUMERIC(15,2) NOT NULL,
+    target_currency TEXT NOT NULL DEFAULT 'KES',
+    target_date DATE,
+    note TEXT DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_date DATE NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_contributions (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    goal_id INTEGER NOT NULL REFERENCES goals(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    amount NUMERIC(15,2) NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'KES',
+    date DATE NOT NULL,
+    note TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS portfolio_targets (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    target_amount NUMERIC(18,2) NOT NULL,
+    target_currency TEXT NOT NULL DEFAULT 'KES',
+    target_date DATE NOT NULL,
+    note TEXT DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_date DATE NOT NULL
 );
 """
 
@@ -268,6 +321,17 @@ CREATE TABLE IF NOT EXISTS global_fx (
     kes_rate REAL NOT NULL,
     updated_date TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS price_anomalies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL DEFAULT 'price',
+    ticker TEXT, exchange TEXT, currency TEXT,
+    fetched_value REAL NOT NULL,
+    previous_value REAL, pct_change REAL,
+    status TEXT NOT NULL DEFAULT 'flagged',
+    reviewed_value REAL,
+    review_note TEXT DEFAULT '',
+    created_at TEXT NOT NULL, resolved_at TEXT
+);
 CREATE TABLE IF NOT EXISTS habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -288,6 +352,48 @@ CREATE TABLE IF NOT EXISTS habit_logs (
     done INTEGER NOT NULL DEFAULT 1,
     note TEXT DEFAULT '',
     UNIQUE(habit_id, date)
+);
+CREATE TABLE IF NOT EXISTS review_jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    agents TEXT
+);
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    icon TEXT DEFAULT '🎯',
+    color TEXT DEFAULT '#C9A84C',
+    category TEXT DEFAULT 'General',
+    target_amount REAL NOT NULL,
+    target_currency TEXT NOT NULL DEFAULT 'KES',
+    target_date TEXT,
+    note TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_date TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_contributions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id INTEGER NOT NULL REFERENCES goals(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'KES',
+    date TEXT NOT NULL,
+    note TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS portfolio_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    target_amount REAL NOT NULL,
+    target_currency TEXT NOT NULL DEFAULT 'KES',
+    target_date TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_date TEXT NOT NULL
 );
 """
 

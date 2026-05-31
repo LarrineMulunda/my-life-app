@@ -134,6 +134,21 @@
     </div>
     <div id="fetch-status" class="fetch-status" style="margin-top:.5rem"></div>
     <div id="fx-inline-status" style="font-size:.72rem;font-family:var(--font-mono);color:var(--text3);margin-top:.3rem"></div>
+    <!-- Agent pipeline progress inline -->
+    <div id="price-agent-status" style="display:none;margin-top:.9rem">
+      <div class="pipeline-title" style="margin-bottom:.5rem">Price Agent Pipeline</div>
+      <div id="price-pipeline-track" class="pipeline-track"></div>
+    </div>
+  </div>
+
+  <!-- Anomalies panel -->
+  <div class="panel" id="anomalies-panel" style="display:none">
+    <div class="panel-title" style="justify-content:space-between">
+      <span>⚠ Price Anomalies</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadAnomalies()">↻ Refresh</button>
+    </div>
+    <p class="panel-hint">Prices that changed significantly were flagged and re-verified by Agent 3. Items below need your attention.</p>
+    <div id="anomalies-body"></div>
   </div>
 
   <!-- Record purchase -->
@@ -360,14 +375,27 @@
 
 <!-- ══ FRIDAY REVIEW ══ -->
 <div class="tab-pane" id="tab-review">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin:1.2rem 0 1rem;flex-wrap:wrap;gap:.8rem">
+  <div class="review-header">
     <div>
-      <div class="page-label" style="margin:0">AI-Powered · Every Friday</div>
+      <div class="page-label" style="margin:0">7-Agent AI Pipeline</div>
       <h2 style="font-family:var(--font-serif);font-size:1.5rem;font-weight:300;margin:.2rem 0 0">Portfolio Review</h2>
     </div>
-    <button class="btn btn-primary" id="gen-review-btn" onclick="generateReview()">✦ Generate Review</button>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <span id="review-last-date" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text3)"></span>
+      <button class="btn btn-primary" id="gen-review-btn" onclick="startAgenticReview()">✦ Generate Review</button>
+    </div>
   </div>
-  <div id="review-loading" style="display:none" class="panel"><p style="color:var(--text2);font-style:italic">Generating… 20–40 seconds.</p></div>
+
+  <!-- Agent pipeline progress -->
+  <div id="agent-pipeline" style="display:none" class="panel">
+    <div class="pipeline-title">Running agents…</div>
+    <div class="pipeline-track" id="pipeline-track"></div>
+    <div id="pipeline-note" style="font-size:.75rem;color:var(--text3);margin-top:.7rem;font-family:var(--font-mono)">
+      Agents 1–5 run in parallel. Agent 6 verifies. Agent 7 summarises. Est. 3–6 minutes.
+    </div>
+  </div>
+
+  <!-- Review content sections -->
   <div id="review-content"></div>
 </div>
 

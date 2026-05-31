@@ -1,0 +1,688 @@
+{% extends "base.html" %}
+{% block title %}Goals — My Life{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-label">module 04</div>
+  <h1 class="page-title">Goals & Targets</h1>
+</div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchGoalTab('targets')">Portfolio Targets</button>
+  <button class="tab-btn" onclick="switchGoalTab('goals')">Savings Goals</button>
+</div>
+
+<!-- ══ PORTFOLIO TARGETS ══ -->
+<div class="goal-tab-pane active" id="gtab-targets">
+
+  <!-- Current value summary -->
+  <div class="kpi-grid" style="margin-top:1.2rem">
+    <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-val" id="t-total">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Stock Value</div><div class="kpi-val" id="t-stocks">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Other Assets</div><div class="kpi-val" id="t-savings">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Data Points</div><div class="kpi-val" id="t-snapshots">—</div></div>
+  </div>
+
+  <!-- Add target -->
+  <div class="panel">
+    <div class="panel-title">Set a Portfolio Target</div>
+    <p class="panel-hint">Set a total portfolio value you want to reach by a specific date. The app tracks your current value against it and calculates probability of hitting the target.</p>
+    <div class="form-grid">
+      <div class="field field-wide">
+        <label>Target Name</label>
+        <input type="text" id="tn-name" placeholder="e.g. KES 10M by end of 2026, Financial Freedom…"/>
+      </div>
+      <div class="field">
+        <label>Target Amount</label>
+        <input type="number" id="tn-amount" placeholder="e.g. 10000000" step="any" min="1"/>
+      </div>
+      <div class="field">
+        <label>Currency</label>
+        <select id="tn-currency">
+          {% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>Target Date</label>
+        <input type="date" id="tn-date"/>
+      </div>
+      <div class="field field-wide">
+        <label>Note <span style="color:var(--text3)">(optional)</span></label>
+        <input type="text" id="tn-note" placeholder="What does hitting this target mean to you?"/>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="addTarget()">Create Target</button>
+  </div>
+
+  <!-- Target cards -->
+  <div id="targets-list"></div>
+</div>
+
+<!-- ══ SAVINGS GOALS ══ -->
+<div class="goal-tab-pane" id="gtab-goals" style="display:none">
+
+  <div class="kpi-grid" style="margin-top:1.2rem">
+    <div class="kpi-card"><div class="kpi-label">Total Goals</div><div class="kpi-val" id="gi-total">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">On Track</div><div class="kpi-val" id="gi-ontrack">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Saved</div><div class="kpi-val" id="gi-saved">—</div></div>
+    <div class="kpi-card"><div class="kpi-label">Overall Progress</div><div class="kpi-val" id="gi-pct">—</div></div>
+  </div>
+
+  <!-- Add goal -->
+  <div class="panel">
+    <div class="panel-title">New Savings Goal</div>
+    <div class="form-grid">
+      <div class="field">
+        <label>Goal Name</label>
+        <input type="text" id="g-name" placeholder="e.g. Emergency Fund, House Deposit…"/>
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <select id="g-category">{% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label>Icon</label>
+        <select id="g-icon">{% for ic in icons %}<option value="{{ ic }}">{{ ic }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label>Colour</label>
+        <input type="color" id="g-color" value="#C9A84C" style="height:38px;padding:.2rem"/>
+      </div>
+      <div class="field">
+        <label>Target Amount</label>
+        <input type="number" id="g-amount" placeholder="e.g. 500000" step="any" min="1"/>
+      </div>
+      <div class="field">
+        <label>Currency</label>
+        <select id="g-currency">{% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label>Target Date <span style="color:var(--text3)">(optional)</span></label>
+        <input type="date" id="g-date"/>
+      </div>
+      <div class="field field-wide">
+        <label>Note <span style="color:var(--text3)">(optional)</span></label>
+        <input type="text" id="g-note" placeholder="What is this goal for?"/>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="addGoal()">Create Goal</button>
+  </div>
+
+  <div id="goals-list"></div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="contrib-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-title" id="contrib-modal-title">Add Contribution</div>
+    <input type="hidden" id="contrib-goal-id"/>
+    <div class="form-grid">
+      <div class="field"><label>Amount</label><input type="number" id="contrib-amount" placeholder="0.00" step="any" min="0.01"/></div>
+      <div class="field"><label>Currency</label><select id="contrib-currency">{% for cur in currencies %}<option value="{{ cur }}" {% if cur == 'KES' %}selected{% endif %}>{{ cur }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Date</label><input type="date" id="contrib-date"/></div>
+      <div class="field field-wide"><label>Note</label><input type="text" id="contrib-note" placeholder="Optional"/></div>
+    </div>
+    <div style="display:flex;gap:.7rem;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveContribution()">Add</button>
+      <button class="btn btn-ghost" onclick="closeModal('contrib-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="edit-goal-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-title">Edit Goal</div>
+    <input type="hidden" id="eg-id"/>
+    <div class="form-grid">
+      <div class="field"><label>Name</label><input type="text" id="eg-name"/></div>
+      <div class="field"><label>Category</label><select id="eg-category">{% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Icon</label><select id="eg-icon">{% for ic in icons %}<option value="{{ ic }}">{{ ic }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Colour</label><input type="color" id="eg-color" style="height:38px;padding:.2rem"/></div>
+      <div class="field"><label>Target Amount</label><input type="number" id="eg-amount" step="any" min="1"/></div>
+      <div class="field"><label>Currency</label><select id="eg-currency">{% for cur in currencies %}<option value="{{ cur }}">{{ cur }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Target Date</label><input type="date" id="eg-date"/></div>
+      <div class="field field-wide"><label>Note</label><input type="text" id="eg-note"/></div>
+    </div>
+    <div style="display:flex;gap:.7rem;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveGoalEdit()">Save</button>
+      <button class="btn btn-ghost" onclick="closeModal('edit-goal-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="edit-target-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-title">Edit Target</div>
+    <input type="hidden" id="et-id"/>
+    <div class="form-grid">
+      <div class="field field-wide"><label>Name</label><input type="text" id="et-name"/></div>
+      <div class="field"><label>Target Amount</label><input type="number" id="et-amount" step="any" min="1"/></div>
+      <div class="field"><label>Currency</label><select id="et-currency">{% for cur in currencies %}<option value="{{ cur }}">{{ cur }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Target Date</label><input type="date" id="et-date"/></div>
+      <div class="field field-wide"><label>Note</label><input type="text" id="et-note"/></div>
+    </div>
+    <div style="display:flex;gap:.7rem;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveTargetEdit()">Save</button>
+      <button class="btn btn-ghost" onclick="closeModal('edit-target-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Shared ────────────────────────────────────────────────────────────────────
+function switchGoalTab(name) {
+  document.querySelectorAll(".goal-tab-pane").forEach(p => p.style.display="none");
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.getElementById("gtab-"+name).style.display="block";
+  event.target.classList.add("active");
+}
+
+async function api(method, url, body) {
+  const opt = {method, headers:{"Content-Type":"application/json"}};
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(url, opt);
+  return r.json();
+}
+
+function toast(msg, type) {
+  const t = document.getElementById("toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.className = "show " + (type||"");
+  setTimeout(() => t.className="", 2600);
+}
+
+function closeModal(id) { document.getElementById(id).style.display="none"; }
+
+function fmt(n) {
+  return (n||0).toLocaleString("en-KE", {maximumFractionDigits:0});
+}
+
+function fmtDec(n, dp=2) {
+  return (n||0).toLocaleString("en-KE", {minimumFractionDigits:dp, maximumFractionDigits:dp});
+}
+
+function progressRing(pct, color, size=80) {
+  const r = (size-8)/2, circ = 2*Math.PI*r;
+  const dash = Math.min(1, pct/100)*circ;
+  return `<svg width="${size}" height="${size}" style="transform:rotate(-90deg)">
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--bg3)" stroke-width="7"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${color}" stroke-width="7"
+      stroke-dasharray="${dash.toFixed(2)} ${circ.toFixed(2)}" stroke-linecap="round"/>
+  </svg>
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+       font-family:var(--font-mono);font-size:.76rem;color:var(--text);font-weight:600">
+    ${Math.min(100,pct).toFixed(0)}%
+  </div>`;
+}
+
+// ══ PORTFOLIO TARGETS ═════════════════════════════════════════════════════════
+async function loadTargets() {
+  const d = await api("GET", "/api/targets");
+
+  document.getElementById("t-total").textContent    = "KES " + fmt(d.current_value||0);
+  document.getElementById("t-stocks").textContent   = "KES " + fmt(d.stock_value||0);
+  document.getElementById("t-savings").textContent  = "KES " + fmt(d.sav_value||0);
+  document.getElementById("t-snapshots").textContent= (d.snapshot_count||0) + " snapshots";
+
+  const wrap = document.getElementById("targets-list");
+  if (!d.targets || !d.targets.length) {
+    wrap.innerHTML = `<div class="empty-note">No targets yet. Create your first portfolio target above.</div>`;
+    return;
+  }
+  wrap.innerHTML = d.targets.map(t => targetCard(t, d.current_value||0)).join("");
+}
+
+const STATUS_CFG = {
+  achieved: {cls:"badge-ok",  label:"✓ Achieved"},
+  on_track: {cls:"badge-ok",  label:"On Track"},
+  possible: {cls:"badge-warn",label:"Possible"},
+  at_risk:  {cls:"badge-err", label:"At Risk"},
+  overdue:  {cls:"badge-err", label:"Overdue"},
+};
+
+function targetCard(t, current) {
+  const p   = t.progress || {};
+  const st  = STATUS_CFG[p.status] || STATUS_CFG["possible"];
+  const pl  = p.probability_label || {label:"—", color:"var(--gold)"};
+  const cur = t.target_currency || "KES";
+  const col = "#C9A84C";
+
+  // Probability gauge
+  const prob     = p.probability || 0;
+  const probColor= pl.color;
+
+  // Insight pills
+  const TYPE_ICON = {success:"✅",positive:"✅",action:"💡",warning:"⚠",alert:"🔴",overdue:"⚠"};
+  const TYPE_CLS  = {success:"ins-success",positive:"ins-positive",action:"ins-action",warning:"ins-warn",alert:"ins-alert",overdue:"ins-warn"};
+  const insRows = (p.insights||[]).map(i =>
+    `<div class="insight-row ${TYPE_CLS[i.type]||'ins-action'}">
+      <span class="ins-icon">${TYPE_ICON[i.type]||"💡"}</span>
+      <span>${i.text}</span>
+    </div>`).join("");
+
+  // Scenario table
+  const scenRows = (p.scenarios||[]).map(s => `
+    <tr class="${s.hits_target?'row-gain':'row-loss'}">
+      <td><strong>${s.label}</strong><div style="font-size:.7rem;color:var(--text3)">${s.description}</div></td>
+      <td class="num-col mo">KES ${fmt(s.monthly_save)}</td>
+      <td class="num-col mo">KES ${fmt(s.final_value)}</td>
+      <td class="num-col mo ${s.hits_target?'pos':'neg'}">${s.pct_of_target}%</td>
+      <td class="num-col hide-sm">
+        ${s.hits_target
+          ? `<span style="color:var(--green)">+KES ${fmt(s.surplus)}</span>`
+          : `<span style="color:var(--red)">-KES ${fmt(s.shortfall)}</span>`}
+      </td>
+    </tr>`).join("");
+
+  return `
+  <div class="panel target-card">
+
+    <!-- Header -->
+    <div class="target-head">
+      <div>
+        <div class="target-name">${t.name}</div>
+        ${t.note ? `<div class="target-note">${t.note}</div>` : ""}
+      </div>
+      <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+        <span class="${st.cls}">${st.label}</span>
+        <button class="icon-btn" onclick="openEditTarget(${JSON.stringify(t).replace(/"/g,'&quot;')})" title="Edit">✎</button>
+        <button class="icon-btn" onclick="deleteTarget(${t.id})" title="Delete">✕</button>
+      </div>
+    </div>
+
+    <!-- Main metrics row -->
+    <div class="target-metrics">
+
+      <!-- Progress ring -->
+      <div style="position:relative;width:80px;height:80px;flex-shrink:0">
+        ${progressRing(p.pct_complete||0, col)}
+      </div>
+
+      <!-- Value stats -->
+      <div class="target-stats">
+        <div class="ts-item">
+          <div class="ts-val">KES ${fmt(p.current_value)}</div>
+          <div class="ts-lbl">Current portfolio</div>
+        </div>
+        <div class="ts-item">
+          <div class="ts-val" style="color:var(--gold2)">${cur} ${fmt(t.target_amount)}</div>
+          <div class="ts-lbl">Target (KES ${fmt(p.target_kes)})</div>
+        </div>
+        <div class="ts-item">
+          <div class="ts-val" style="color:${(p.gap||0)===0?'var(--green)':'var(--red)'}">
+            ${(p.gap||0)===0 ? "✓ Reached!" : "KES " + fmt(p.gap) + " to go"}
+          </div>
+          <div class="ts-lbl">Gap remaining</div>
+        </div>
+        <div class="ts-item">
+          <div class="ts-val">${p.months_left != null ? p.months_left+"mo" : "—"}</div>
+          <div class="ts-lbl">${p.days_left!=null && p.days_left<0 ? "overdue by "+Math.abs(p.days_left)+"d" : "until deadline"}</div>
+        </div>
+      </div>
+
+      <!-- Probability gauge -->
+      <div class="prob-gauge">
+        <div class="prob-circle" style="background:conic-gradient(${probColor} ${prob*3.6}deg, var(--bg3) 0deg)">
+          <div class="prob-inner">
+            <div class="prob-num" style="color:${probColor}">${prob}%</div>
+            <div class="prob-lbl-sm">${pl.label}</div>
+          </div>
+        </div>
+        <div class="prob-label">Probability</div>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="goal-bar-wrap" style="margin:.9rem 0">
+      <div class="goal-bar" style="width:${Math.min(100,p.pct_complete||0)}%;background:var(--gold)"></div>
+    </div>
+
+    <!-- Key numbers row -->
+    <div class="target-nums">
+      <div class="tnum-item">
+        <div class="tnum-val" style="color:var(--gold2)">KES ${fmt(p.required_monthly)}</div>
+        <div class="tnum-lbl">Needed / month</div>
+      </div>
+      <div class="tnum-item">
+        <div class="tnum-val">KES ${fmt(p.monthly_contrib_est)}</div>
+        <div class="tnum-lbl">Est. current / month</div>
+      </div>
+      <div class="tnum-item">
+        <div class="tnum-val">${p.monthly_growth_rate!=null ? p.monthly_growth_rate+"%" : "—"}</div>
+        <div class="tnum-lbl">Avg monthly growth</div>
+      </div>
+      <div class="tnum-item">
+        <div class="tnum-val" style="color:${(p.proj_vs_target||0)>=0?'var(--green)':'var(--red)'}">
+          ${(p.proj_vs_target||0)>=0 ? "+KES "+fmt(p.proj_vs_target) : "-KES "+fmt(Math.abs(p.proj_vs_target))}
+        </div>
+        <div class="tnum-lbl">Projected vs target</div>
+      </div>
+      ${p.hit_date ? `<div class="tnum-item">
+        <div class="tnum-val">${p.hit_date}</div>
+        <div class="tnum-lbl">Projected hit date</div>
+      </div>` : ""}
+      <div class="tnum-item">
+        <div class="tnum-val">${p.snapshot_count||0}</div>
+        <div class="tnum-lbl">History data points</div>
+      </div>
+    </div>
+
+    <!-- Insights -->
+    ${insRows ? `<div class="insights-section">${insRows}</div>` : ""}
+
+    <!-- Scenarios -->
+    ${scenRows ? `
+    <div style="margin-top:1.2rem">
+      <div class="review-sub" style="margin-bottom:.6rem">What-If Scenarios</div>
+      <div class="table-wrap">
+        <table class="data-table" style="font-size:.78rem">
+          <thead><tr>
+            <th>Scenario</th>
+            <th class="num-col">Save/month</th>
+            <th class="num-col">Final Value</th>
+            <th class="num-col">% of Target</th>
+            <th class="num-col hide-sm">Surplus / Shortfall</th>
+          </tr></thead>
+          <tbody>${scenRows}</tbody>
+        </table>
+      </div>
+    </div>` : ""}
+
+  </div>`;
+}
+
+async function addTarget() {
+  const name = document.getElementById("tn-name").value.trim();
+  const amt  = parseFloat(document.getElementById("tn-amount").value);
+  const dt   = document.getElementById("tn-date").value;
+  if (!name)    { toast("Enter a target name.", "error"); return; }
+  if (!amt||amt<=0){ toast("Enter a valid target amount.", "error"); return; }
+  if (!dt)      { toast("Select a target date.", "error"); return; }
+
+  const d = await api("POST", "/api/targets", {
+    name, target_amount: amt,
+    target_currency: document.getElementById("tn-currency").value,
+    target_date: dt,
+    note: document.getElementById("tn-note").value.trim(),
+  });
+  if (d.ok) {
+    toast("Target created ✓");
+    document.getElementById("tn-name").value="";
+    document.getElementById("tn-amount").value="";
+    document.getElementById("tn-note").value="";
+    loadTargets();
+  } else toast(d.error||"Error", "error");
+}
+
+function openEditTarget(t) {
+  document.getElementById("et-id").value      = t.id;
+  document.getElementById("et-name").value    = t.name;
+  document.getElementById("et-amount").value  = t.target_amount;
+  document.getElementById("et-currency").value= t.target_currency;
+  document.getElementById("et-date").value    = t.target_date||"";
+  document.getElementById("et-note").value    = t.note||"";
+  document.getElementById("edit-target-modal").style.display="flex";
+}
+
+async function saveTargetEdit() {
+  const id = document.getElementById("et-id").value;
+  const d  = await api("PUT", `/api/targets/${id}`, {
+    name:            document.getElementById("et-name").value.trim(),
+    target_amount:   parseFloat(document.getElementById("et-amount").value),
+    target_currency: document.getElementById("et-currency").value,
+    target_date:     document.getElementById("et-date").value,
+    note:            document.getElementById("et-note").value.trim(),
+  });
+  if (d.ok) { closeModal("edit-target-modal"); toast("Updated ✓"); loadTargets(); }
+  else toast(d.error||"Error","error");
+}
+
+async function deleteTarget(tid) {
+  if (!confirm("Delete this target?")) return;
+  const d = await api("DELETE", `/api/targets/${tid}`);
+  if (d.ok) { toast("Deleted."); loadTargets(); }
+}
+
+// ══ SAVINGS GOALS ═════════════════════════════════════════════════════════════
+async function loadGoals() {
+  const d = await api("GET", "/api/goals");
+  const ins = await api("GET", "/api/goals/insights");
+  document.getElementById("gi-total").textContent   = ins.total_goals||0;
+  document.getElementById("gi-ontrack").textContent = `${ins.on_track||0} / ${ins.total_goals||0}`;
+  document.getElementById("gi-saved").textContent   = "KES " + fmt(ins.total_saved||0);
+  document.getElementById("gi-pct").textContent     = (ins.overall_pct||0)+"%";
+
+  const wrap = document.getElementById("goals-list");
+  if (!d.goals||!d.goals.length) {
+    wrap.innerHTML=`<div class="empty-note">No goals yet. Add one above.</div>`; return;
+  }
+  wrap.innerHTML = d.goals.map(g => goalCard(g)).join("");
+}
+
+const GSTATUS = {
+  completed:   {cls:"badge-ok",  label:"✓ Completed"},
+  on_track:    {cls:"badge-ok",  label:"On Track"},
+  in_progress: {cls:"badge-info",label:"In Progress"},
+  behind:      {cls:"badge-warn",label:"Behind"},
+  at_risk:     {cls:"badge-err", label:"At Risk"},
+  overdue:     {cls:"badge-err", label:"Overdue"},
+};
+
+function goalCard(g) {
+  const p  = g.progress||{};
+  const st = GSTATUS[p.status]||GSTATUS["in_progress"];
+  const cur = g.target_currency||"KES";
+  const contribs = (g.contributions||[]).slice(-5).reverse().map(c=>`
+    <div class="contrib-row">
+      <span class="contrib-date">${c.date}</span>
+      <span class="contrib-amt">${c.currency} ${fmt(c.amount)}</span>
+      <span class="contrib-note">${c.note||""}</span>
+      <button class="icon-btn" onclick="deleteContrib(${g.id},${c.id})" title="Remove">✕</button>
+    </div>`).join("") || `<div style="color:var(--text3);font-size:.78rem;padding:.4rem 0">No contributions yet.</div>`;
+
+  return `
+  <div class="panel goal-card">
+    <div class="goal-head">
+      <div class="goal-left">
+        <div class="goal-icon-wrap" style="background:${g.color}22;color:${g.color}">${g.icon}</div>
+        <div>
+          <div class="goal-name">${g.name}</div>
+          <div class="goal-meta">${g.category} · target ${cur} ${fmt(g.target_amount)}</div>
+        </div>
+      </div>
+      <div class="goal-right">
+        <span class="${st.cls}">${st.label}</span>
+        <button class="icon-btn" onclick="openEditGoal(${JSON.stringify(g).replace(/"/g,'&quot;')})" title="Edit">✎</button>
+        <button class="icon-btn" onclick="archiveGoal(${g.id})" title="Archive">⋯</button>
+      </div>
+    </div>
+    <div class="goal-body">
+      <div style="position:relative;width:72px;height:72px;flex-shrink:0">
+        ${progressRing(p.pct_complete||0, g.color, 72)}
+      </div>
+      <div class="goal-stats">
+        <div class="goal-stat"><span class="gs-val" style="color:${g.color}">KES ${fmt(p.saved_kes)}</span><span class="gs-lbl">saved of KES ${fmt(p.target_kes)}</span></div>
+        <div class="goal-stat"><span class="gs-val">KES ${fmt(p.remaining_kes)}</span><span class="gs-lbl">remaining</span></div>
+        <div class="goal-stat"><span class="gs-val">KES ${fmt(p.monthly_rate)}</span><span class="gs-lbl">avg/month</span></div>
+        ${p.monthly_needed!=null?`<div class="goal-stat"><span class="gs-val" style="color:var(--gold2)">KES ${fmt(p.monthly_needed)}</span><span class="gs-lbl">needed/month</span></div>`:""}
+        <div class="goal-stat">
+          <span class="gs-val" style="color:var(--text2)">${p.days_left!=null?(p.days_left>0?p.days_left+"d left":Math.abs(p.days_left)+"d overdue"):"No deadline"}</span>
+          <span class="gs-lbl">${p.projected_date?"→ "+p.projected_date:""}</span>
+        </div>
+      </div>
+    </div>
+    <div class="goal-bar-wrap">
+      <div class="goal-bar" style="width:${Math.min(100,p.pct_complete||0)}%;background:${g.color}"></div>
+    </div>
+    <div class="contrib-section">
+      <div class="contrib-header">
+        <span style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);text-transform:uppercase;letter-spacing:.08em">Contributions (${p.contributions_count||0})</span>
+        <button class="btn btn-ghost btn-sm" onclick="openContrib(${g.id},'${g.name}')">+ Add</button>
+      </div>
+      <div class="contrib-list">${contribs}</div>
+    </div>
+  </div>`;
+}
+
+async function addGoal() {
+  const name = document.getElementById("g-name").value.trim();
+  const amt  = parseFloat(document.getElementById("g-amount").value);
+  if (!name)     { toast("Enter a goal name.", "error"); return; }
+  if (!amt||amt<=0){ toast("Enter a valid amount.", "error"); return; }
+  const d = await api("POST", "/api/goals", {
+    name, category: document.getElementById("g-category").value,
+    icon: document.getElementById("g-icon").value,
+    color: document.getElementById("g-color").value,
+    target_amount: amt,
+    target_currency: document.getElementById("g-currency").value,
+    target_date: document.getElementById("g-date").value||null,
+    note: document.getElementById("g-note").value.trim(),
+  });
+  if (d.ok) { toast("Goal created ✓"); document.getElementById("g-name").value=""; document.getElementById("g-amount").value=""; loadGoals(); }
+  else toast(d.error||"Error","error");
+}
+
+function openEditGoal(g) {
+  document.getElementById("eg-id").value       = g.id;
+  document.getElementById("eg-name").value     = g.name;
+  document.getElementById("eg-category").value = g.category;
+  document.getElementById("eg-icon").value     = g.icon;
+  document.getElementById("eg-color").value    = g.color;
+  document.getElementById("eg-amount").value   = g.target_amount;
+  document.getElementById("eg-currency").value = g.target_currency;
+  document.getElementById("eg-date").value     = g.target_date||"";
+  document.getElementById("eg-note").value     = g.note||"";
+  document.getElementById("edit-goal-modal").style.display="flex";
+}
+
+async function saveGoalEdit() {
+  const id = document.getElementById("eg-id").value;
+  const d  = await api("PUT", `/api/goals/${id}`, {
+    name: document.getElementById("eg-name").value.trim(),
+    category: document.getElementById("eg-category").value,
+    icon: document.getElementById("eg-icon").value,
+    color: document.getElementById("eg-color").value,
+    target_amount: parseFloat(document.getElementById("eg-amount").value),
+    target_currency: document.getElementById("eg-currency").value,
+    target_date: document.getElementById("eg-date").value||null,
+    note: document.getElementById("eg-note").value.trim(),
+  });
+  if (d.ok) { closeModal("edit-goal-modal"); toast("Updated ✓"); loadGoals(); }
+  else toast(d.error||"Error","error");
+}
+
+async function archiveGoal(gid) {
+  if (!confirm("Archive this goal? Data is kept but goal is hidden.")) return;
+  const d = await api("POST", `/api/goals/${gid}/archive`);
+  if (d.ok) { toast("Archived."); loadGoals(); }
+}
+
+function openContrib(gid, name) {
+  document.getElementById("contrib-goal-id").value = gid;
+  document.getElementById("contrib-modal-title").textContent = `Add to: ${name}`;
+  document.getElementById("contrib-amount").value = "";
+  document.getElementById("contrib-note").value = "";
+  document.getElementById("contrib-date").value = new Date().toISOString().split("T")[0];
+  document.getElementById("contrib-modal").style.display="flex";
+}
+
+async function saveContribution() {
+  const gid = document.getElementById("contrib-goal-id").value;
+  const amt = parseFloat(document.getElementById("contrib-amount").value);
+  if (!amt||amt<=0){ toast("Enter a valid amount.","error"); return; }
+  const d = await api("POST", `/api/goals/${gid}/contribute`, {
+    amount: amt,
+    currency: document.getElementById("contrib-currency").value,
+    date: document.getElementById("contrib-date").value,
+    note: document.getElementById("contrib-note").value.trim(),
+  });
+  if (d.ok) { closeModal("contrib-modal"); toast("Added ✓"); loadGoals(); }
+  else toast(d.error||"Error","error");
+}
+
+async function deleteContrib(gid, cid) {
+  const d = await api("DELETE", `/api/goals/${gid}/contribute/${cid}`);
+  if (d.ok) { toast("Removed."); loadGoals(); }
+}
+
+// Init
+loadTargets();
+loadGoals();
+</script>
+
+<style>
+/* ── Tab switcher ──────────────────────────────────────────────────────────── */
+.goal-tab-pane { }
+
+/* ── Target card ───────────────────────────────────────────────────────────── */
+.target-card { margin-bottom:1.4rem; }
+.target-head { display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.6rem;margin-bottom:1.1rem; }
+.target-name { font-family:var(--font-serif);font-size:1.2rem;font-weight:300;color:var(--text); }
+.target-note { font-size:.78rem;color:var(--text3);margin-top:.2rem; }
+
+.target-metrics { display:flex;align-items:flex-start;gap:1.2rem;flex-wrap:wrap;margin-bottom:.5rem; }
+
+.target-stats { display:flex;flex-wrap:wrap;gap:.8rem 1.5rem;flex:1;min-width:0; }
+.ts-item { display:flex;flex-direction:column;min-width:110px; }
+.ts-val  { font-family:var(--font-serif);font-size:1.05rem;font-weight:300;color:var(--text);white-space:nowrap; }
+.ts-lbl  { font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-top:.1rem; }
+
+/* Probability gauge */
+.prob-gauge { display:flex;flex-direction:column;align-items:center;gap:.4rem;flex-shrink:0; }
+.prob-circle {
+  width:72px;height:72px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  position:relative;
+}
+.prob-inner { text-align:center; }
+.prob-num   { font-family:var(--font-mono);font-size:.9rem;font-weight:700; }
+.prob-lbl-sm{ font-family:var(--font-mono);font-size:.55rem;color:var(--text3);text-transform:uppercase; }
+.prob-label { font-family:var(--font-mono);font-size:.62rem;color:var(--text3);text-transform:uppercase;letter-spacing:.08em; }
+
+/* Target key numbers */
+.target-nums { display:flex;flex-wrap:wrap;gap:.8rem 1.5rem;padding:1rem 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin:.6rem 0 1rem; }
+.tnum-item { display:flex;flex-direction:column;min-width:120px; }
+.tnum-val  { font-family:var(--font-mono);font-size:.88rem;color:var(--text);white-space:nowrap; }
+.tnum-lbl  { font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-top:.15rem; }
+
+/* Insights */
+.insights-section { display:flex;flex-direction:column;gap:.45rem;margin-bottom:1rem; }
+.insight-row { display:flex;gap:.6rem;align-items:flex-start;padding:.5rem .7rem;border-radius:8px;font-size:.8rem; }
+.ins-icon { flex-shrink:0;font-size:.9rem; }
+.ins-success,.ins-positive { background:rgba(92,158,106,.08);border-left:3px solid var(--green);color:var(--text2); }
+.ins-action  { background:rgba(201,168,76,.07);border-left:3px solid var(--gold);color:var(--text2); }
+.ins-warn    { background:rgba(201,168,76,.10);border-left:3px solid var(--gold2);color:var(--text2); }
+.ins-alert   { background:rgba(192,86,78,.08);border-left:3px solid var(--red);color:var(--text2); }
+
+/* Goal card (savings) */
+.goal-card { margin-bottom:1.2rem; }
+.goal-head { display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.1rem;flex-wrap:wrap;gap:.5rem; }
+.goal-left { display:flex;align-items:center;gap:.8rem; }
+.goal-right{ display:flex;align-items:center;gap:.5rem;flex-wrap:wrap; }
+.goal-icon-wrap { width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.4rem;flex-shrink:0; }
+.goal-name { font-size:1.05rem;color:var(--text); }
+.goal-meta { font-family:var(--font-mono);font-size:.65rem;color:var(--text3);margin-top:.15rem; }
+.goal-body { display:flex;align-items:flex-start;gap:1.2rem;margin-bottom:1rem;flex-wrap:wrap; }
+.goal-stats { display:flex;flex-wrap:wrap;gap:.8rem 1.5rem;flex:1;min-width:0; }
+.goal-stat  { display:flex;flex-direction:column; }
+.gs-val { font-size:1rem;font-family:var(--font-serif);font-weight:300;color:var(--text);white-space:nowrap; }
+.gs-lbl { font-family:var(--font-mono);font-size:.6rem;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-top:.1rem; }
+.goal-bar-wrap { height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:1rem; }
+.goal-bar { height:100%;border-radius:3px;transition:width .4s;min-width:3px; }
+
+/* Contributions */
+.contrib-section { border-top:1px solid var(--border);padding-top:.9rem; }
+.contrib-header  { display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem; }
+.contrib-list    { display:flex;flex-direction:column;gap:.3rem; }
+.contrib-row { display:flex;align-items:center;gap:.6rem;padding:.35rem .5rem;border-radius:6px;background:var(--bg3);font-size:.78rem;flex-wrap:wrap; }
+.contrib-date{ font-family:var(--font-mono);color:var(--text3);flex-shrink:0; }
+.contrib-amt { font-family:var(--font-mono);color:var(--gold2);flex-shrink:0; }
+.contrib-note{ color:var(--text2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+
+/* Badges */
+.badge-info { font-family:var(--font-mono);font-size:.6rem;background:rgba(91,135,181,.15);color:#6ba0c8;padding:.18rem .5rem;border-radius:5px;border:1px solid rgba(91,135,181,.3); }
+.badge-err  { font-family:var(--font-mono);font-size:.6rem;background:rgba(192,86,78,.12);color:var(--red);padding:.18rem .5rem;border-radius:5px;border:1px solid rgba(192,86,78,.25); }
+.empty-note { text-align:center;color:var(--text3);font-style:italic;padding:2.5rem 1rem; }
+</style>
+{% endblock %}
