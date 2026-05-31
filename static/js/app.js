@@ -1072,14 +1072,29 @@ async function pollReview(jobId) {
   if (job.status === "completed") {
     clearInterval(_pollTimer);
     _pollTimer = null;
-    document.getElementById("gen-review-btn").disabled = false;
-    document.getElementById("gen-review-btn").textContent = "✦ Generate Review";
-    document.getElementById("pipeline-note").textContent = "✓ Complete — " +
+
+    const btn = document.getElementById("gen-review-btn");
+    if (btn) { btn.disabled = false; btn.textContent = "✦ Generate Review"; }
+
+    const noteEl = document.getElementById("pipeline-note");
+    if (noteEl) noteEl.textContent = "✓ Complete — " +
       new Date(agents._finished_at || "").toLocaleTimeString();
 
-    // Render full review
-    const summary = agents.summary?.result || {};
+    // Extract summary result - support both {result:{...}} and flat format
+    const summary = agents.summary?.result || agents.summary || {};
+
+    // Guard: ensure review-content exists before rendering
+    const wrap = document.getElementById("review-content");
+    if (!wrap) { console.warn("review-content not found"); return; }
+
+    // Render immediately
     renderAgenticReview(agents, summary);
+
+    // Show toast
+    toast("Review complete ✓");
+
+    // Also save to "last_review" via a fresh load so future page loads show it
+    setTimeout(() => loadReview(), 500);
   }
 }
 
@@ -1091,6 +1106,7 @@ function renderPipeline(agents) {
     const a    = agents[id] || {};
     const meta = AGENT_META[id] || {};
     const st    = a.status || "waiting";
+    const pass2 = id === "verifier" && a.pass === 2;
     const cls   = st === "done"    ? "agent-done"    :
                   st === "running" ? "agent-running"  :
                   st === "revising"? "agent-running"  :
@@ -1098,16 +1114,25 @@ function renderPipeline(agents) {
     const spin  = (st === "running" || st === "revising")
                   ? '<span class="agent-spinner"></span>' : "";
     const statusIcon = st==="done"?"✓":st==="revising"?"↻":st==="running"?"…":st==="error"?"✗":"·";
-    const descText   = st==="error"   ? (a.error||"Error")
-                     : st==="revising"? "Revising based on verifier feedback…"
-                     : meta.desc;
+
+    // Dynamic description based on state
+    let descText = meta.desc;
+    if (st === "error")    descText = a.error || "Error";
+    else if (st === "revising") descText = "Revising based on verifier feedback…";
+    else if (pass2 && st === "running") descText = "Re-verifying revised outputs…";
+    else if (pass2 && st === "done")    descText = "Second-pass verification complete";
+
+    // Name badge
+    const nameBadge = a.revised
+      ? '<span style="font-size:.6rem;color:var(--gold2);margin-left:.4rem">↻ revised</span>'
+      : pass2 && st === "done"
+      ? '<span style="font-size:.6rem;color:var(--green);margin-left:.4rem">✓ pass 2</span>'
+      : "";
+
     return `<div class="agent-step ${cls}">
       <div class="agent-step-icon">${meta.icon}${spin}</div>
       <div class="agent-step-info">
-        <div class="agent-step-name">
-          ${meta.name}
-          ${a.revised ? '<span style="font-size:.6rem;color:var(--gold2);margin-left:.4rem">↻ revised</span>' : ""}
-        </div>
+        <div class="agent-step-name">${meta.name}${nameBadge}</div>
         <div class="agent-step-desc">${descText}</div>
       </div>
       <div class="agent-step-status">${statusIcon}</div>
@@ -1117,6 +1142,28 @@ function renderPipeline(agents) {
 
 function renderAgenticReview(agents, summary) {
   const wrap = document.getElementById("review-content");
+  if (!wrap) return;
+
+  // If summary is completely empty, show a partial-results message
+  if (!summary || (!summary.headline && !summary.executive_summary && !summary.overall_rating)) {
+    // Try to render whatever agent data we DO have
+    const perf = agents.performance?.result || {};
+    const reb  = agents.rebalancing?.result || {};
+    if (!perf.performance_commentary && !reb.rebalancing_summary) {
+      wrap.innerHTML = `<div class="panel" style="text-align:center;padding:2rem">
+        <p style="color:var(--red);font-family:var(--font-mono);font-size:.82rem">
+          ⚠ Review completed but the Executive Summary returned no data.<br>
+          This usually means Gemini hit a rate limit on the final agent.
+        </p>
+        <p style="color:var(--text3);font-size:.78rem;margin-top:.5rem">
+          Individual agent data may still be available — try re-running the review.
+        </p>
+        <button class="btn btn-primary" style="margin-top:1rem" onclick="startAgenticReview()">↻ Re-run Review</button>
+      </div>`;
+      // But still try to render partial agent sections below
+    }
+  }
+
   const date = new Date().toLocaleDateString("en-KE",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
 
   // Rating colour
@@ -1365,11 +1412,24 @@ function renderAgenticReview(agents, summary) {
     <!-- Verifier note -->
     ${verifier.verifier_note ? `
     <div class="panel" style="border-color:rgba(92,158,106,.3);background:rgba(92,158,106,.04)">
-      <div class="panel-title" style="color:var(--green)">✅ Verification Complete</div>
+      <div class="panel-title" style="color:var(--green);justify-content:space-between">
+        <span>✅ Verification ${verifier.passes_completed === 2 ? "(2-Pass)" : "Complete"}</span>
+        ${verifier.passes_completed === 2
+          ? `<span style="font-family:var(--font-mono);font-size:.65rem;color:var(--green)">
+              Verified revised outputs ✓
+             </span>`
+          : ""}
+      </div>
       <p style="font-size:.82rem;color:var(--text2)">${verifier.verifier_note}</p>
-      <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);margin-top:.5rem">
-        Confidence: ${verifier.overall_confidence||"—"} ·
-        ${Object.entries(verifier.reliability_scores||{}).map(([k,v])=>`${k}: ${v}`).join(" · ")}
+      ${verifier.revised_agents?.length ? `
+        <div style="font-family:var(--font-mono);font-size:.7rem;color:var(--gold2);margin:.4rem 0">
+          Agents revised after first pass: ${verifier.revised_agents.join(", ")}
+        </div>` : ""}
+      <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);margin-top:.4rem">
+        Confidence: <strong style="color:${verifier.overall_confidence==="HIGH"?"var(--green)":verifier.overall_confidence==="MEDIUM"?"var(--gold)":"var(--red)"}">${verifier.overall_confidence||"—"}</strong>
+        · ${Object.entries(verifier.reliability_scores||{}).map(([k,v])=>
+            `${k}: <span style="color:${v==="HIGH"?"var(--green)":v==="MEDIUM"?"var(--gold)":"var(--red)"}">${v}</span>`
+          ).join(" · ")}
       </div>
     </div>` : ""}
 
@@ -1566,11 +1626,14 @@ async function loadReview() {
   if (dateEl && rev.date) dateEl.textContent = "Last: " + rev.date;
 
   if (rev.agentic && rev.agents) {
-    // Wrap stored results so renderAgenticReview can access .result
+    // Wrap stored results so renderAgenticReview can access agent.result
     const agentMap = Object.fromEntries(
-      Object.entries(rev.agents).map(([k,v]) => [k, {status:"done", result:v}])
+      Object.entries(rev.agents).map(([k,v]) => [k, {status:"done", result: v}])
     );
-    renderAgenticReview(agentMap, rev.agents.summary || rev);
+    // summary: use agents.summary (the stored result object) or top-level rev fields
+    const summaryResult = rev.agents.summary || {};
+    const summaryFull   = Object.keys(summaryResult).length > 0 ? summaryResult : rev;
+    renderAgenticReview(agentMap, summaryFull);
   } else if (wrap) {
     // Old format review — show a re-run prompt
     wrap.innerHTML = `

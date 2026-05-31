@@ -990,14 +990,57 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     for t in revision_threads:
         t.join(timeout=120)
 
-    # Refresh agent_results with revised outputs
+    # Refresh agent_results with the latest revised outputs
     agent_results = {
         aid: state[aid].get("result", {})
         for aid in ALL_REVISIONABLE
     }
 
-    # ── Agent 9: Summary (waits for verifier + ALL revisions) ────────────────
-    # ── Agent 9: Summary (waits for verifier + ALL revisions) ────────────────
+    # ── Verifier second pass: re-verify using the REVISED data ───────────────
+    # Only run a second pass if any revisions actually happened
+    if revision_threads:
+        state["verifier"]["status"]  = "running"
+        state["verifier"]["pass"]    = 2
+        _save_job(job_id, user_id, state)
+
+        # Build second-pass prompt: compare original vs revised findings
+        revised_aids = [
+            aid for aid in ALL_REVISIONABLE
+            if state.get(aid, {}).get("revised")
+        ]
+        second_pass_note = (
+            "SECOND PASS VERIFICATION. "
+            "The following agents were revised based on your first-pass feedback: "
+            + ", ".join(revised_aids) + ". "
+            "Review the REVISED outputs below and confirm whether issues were resolved. "
+            "Only flag items that are STILL problematic after revision."
+        )
+        try:
+            second_prompt = _prompt_verifier(agent_results, note=second_pass_note)
+            second_text   = _gemini(api_key, second_prompt, timeout=90)
+            second_result = _extract_json(second_text)
+
+            # Merge: take second-pass reliability scores and verified items,
+            # keep first-pass needs_revision history for reference
+            first_result = state["verifier"].get("result", {})
+            merged = {
+                **second_result,
+                "first_pass_revisions": first_result.get("agent_revisions_needed", {}),
+                "revised_agents": revised_aids,
+                "passes_completed": 2,
+            }
+            state["verifier"]["status"] = "done"
+            state["verifier"]["result"] = merged
+        except Exception as e:
+            # Keep first-pass result if second pass fails
+            state["verifier"]["status"]       = "done"
+            state["verifier"]["second_pass_error"] = str(e)
+
+        _save_job(job_id, user_id, state)
+
+    verifier_result = state["verifier"].get("result", {})
+
+    # ── Agent 9: Summary — uses latest agent data + verified findings ─────────
     run_agent("summary", _prompt_summary,
               agent_results, verifier_result)
 
@@ -1005,22 +1048,35 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     state["_finished_at"] = datetime.utcnow().isoformat()
     _save_job(job_id, user_id, state)
 
-    # Save final review to config for the review tab
+    # Save final review to config — always save even if summary is partial
     from db import cfg_set
-    final = state["summary"].get("result", {})
-    if final:
-        payload = {
-            "date":   datetime.today().strftime("%Y-%m-%d"),
-            "agentic": True,
-            "agents": {
-                aid: state[aid].get("result", {})
-                for aid in ("performance","rebalancing","analyst","thematic",
-                            "corporate","dividend","health","verifier","summary")
-                if state.get(aid)  # only include agents that ran
-            },
-            **final,
-        }
-        cfg_set(user_id, "last_review", json.dumps(payload))
+    final   = state["summary"].get("result") or {}
+    agents_data = {
+        aid: state[aid].get("result", {})
+        for aid in ("performance","rebalancing","analyst","thematic",
+                    "corporate","dividend","health","verifier","summary")
+        if state.get(aid)
+    }
+    payload = {
+        "date":    datetime.today().strftime("%Y-%m-%d"),
+        "agentic": True,
+        "agents":  agents_data,
+        # Spread summary fields at top level for backward compat
+        "headline":         final.get("headline", "Portfolio Review"),
+        "overall_rating":   final.get("overall_rating", "NEUTRAL"),
+        "executive_summary":final.get("executive_summary", ""),
+        "top_3_actions":    final.get("top_3_actions", []),
+        "watchlist":        final.get("watchlist", []),
+        "risks_to_watch":   final.get("risks_to_watch", []),
+        "opportunities":    final.get("opportunities", []),
+        "portfolio_badges": final.get("portfolio_badges", []),
+        "investor_profile": final.get("investor_profile", {}),
+        "kes_impact_note":  final.get("kes_impact_note", ""),
+        "income_summary":   final.get("income_summary", {}),
+        "next_review_focus":final.get("next_review_focus", ""),
+        **final,
+    }
+    cfg_set(user_id, "last_review", json.dumps(payload))
 
 
 def start_pipeline(user_id, api_key, portfolio, savings):
