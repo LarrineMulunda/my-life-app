@@ -1080,21 +1080,26 @@ async function pollReview(jobId) {
     if (noteEl) noteEl.textContent = "✓ Complete — " +
       new Date(agents._finished_at || "").toLocaleTimeString();
 
-    // Extract summary result - support both {result:{...}} and flat format
-    const summary = agents.summary?.result || agents.summary || {};
-
-    // Guard: ensure review-content exists before rendering
-    const wrap = document.getElementById("review-content");
-    if (!wrap) { console.warn("review-content not found"); return; }
-
-    // Render immediately
-    renderAgenticReview(agents, summary);
-
-    // Show toast
     toast("Review complete ✓");
 
-    // Also save to "last_review" via a fresh load so future page loads show it
-    setTimeout(() => loadReview(), 500);
+    // Always render from cfg (loadReview) — cfg is guaranteed saved before
+    // the job status flips to completed. Retry up to 3x in case of lag.
+    let _renderAttempts = 0;
+    async function _renderFromCfg() {
+      _renderAttempts++;
+      const raw = await api("GET", "/api/portfolio/review");
+      if (raw?.review?.agentic && raw?.review?.agents?.summary) {
+        loadReview();
+      } else if (_renderAttempts < 3) {
+        setTimeout(_renderFromCfg, 1000);
+      } else {
+        // Last resort: render directly from job data
+        const summary = agents.summary?.result || {};
+        const wrap    = document.getElementById("review-content");
+        if (wrap) renderAgenticReview(agents, summary);
+      }
+    }
+    _renderFromCfg();
   }
 }
 
@@ -1608,44 +1613,57 @@ async function loadReview() {
     if (wrap) wrap.innerHTML = `
       <div class="panel" style="text-align:center;padding:2.5rem 1.5rem">
         <div style="font-size:2rem;margin-bottom:.7rem">✦</div>
-        <div style="font-family:var(--font-serif);font-size:1.2rem;color:var(--text);margin-bottom:.5rem">
-          No review yet
-        </div>
+        <div style="font-family:var(--font-serif);font-size:1.2rem;color:var(--text);margin-bottom:.5rem">No review yet</div>
         <p style="color:var(--text3);font-size:.84rem;max-width:380px;margin:0 auto 1.2rem">
-          Click <strong>✦ Generate Review</strong> above to run the 9-agent AI pipeline.
-          It fetches real-time data, analyses your portfolio health, stress-tests against
-          market scenarios, and gives you actionable weekly insights.
+          Click <strong>✦ Generate Review</strong> to run the 9-agent AI pipeline.
         </p>
         <button class="btn btn-primary" onclick="startAgenticReview()">✦ Generate Review</button>
       </div>`;
     return;
   }
 
-  const rev = raw.review;
+  const rev    = raw.review;
   const dateEl = document.getElementById("review-last-date");
   if (dateEl && rev.date) dateEl.textContent = "Last: " + rev.date;
 
-  if (rev.agentic && rev.agents) {
-    // Wrap stored results so renderAgenticReview can access agent.result
-    const agentMap = Object.fromEntries(
-      Object.entries(rev.agents).map(([k,v]) => [k, {status:"done", result: v}])
-    );
-    // summary: use agents.summary (the stored result object) or top-level rev fields
-    const summaryResult = rev.agents.summary || {};
-    const summaryFull   = Object.keys(summaryResult).length > 0 ? summaryResult : rev;
-    renderAgenticReview(agentMap, summaryFull);
-  } else if (wrap) {
-    // Old format review — show a re-run prompt
-    wrap.innerHTML = `
+  if (!rev.agentic || !rev.agents) {
+    if (wrap) wrap.innerHTML = `
       <div class="panel" style="text-align:center;padding:2rem">
         <p style="color:var(--text3);font-size:.84rem;margin-bottom:1rem">
-          Your last review was generated with the older pipeline and doesn't include
-          health scores, stress tests, or dividend intelligence.
-          Re-run to get the full 9-agent analysis.
+          Old review format — re-run to get the full 9-agent analysis.
         </p>
         <button class="btn btn-primary" onclick="startAgenticReview()">✦ Re-run Full Review</button>
       </div>`;
+    return;
   }
+
+  // rev.agents[aid] = the stored result object directly (already unwrapped from state)
+  // Wrap each into {status:"done", result:v} so renderAgenticReview can do agent.result
+  const agentMap = Object.fromEntries(
+    Object.entries(rev.agents).map(([k, v]) => [k, { status: "done", result: v }])
+  );
+
+  // summary is the stored result object — also available top-level in rev
+  // Prefer rev.agents.summary, fall back to top-level rev fields
+  const summaryFromAgents = rev.agents.summary || {};
+  const summary = Object.keys(summaryFromAgents).length > 0
+    ? summaryFromAgents
+    : {
+        headline:          rev.headline          || "",
+        overall_rating:    rev.overall_rating    || "NEUTRAL",
+        executive_summary: rev.executive_summary || "",
+        top_3_actions:     rev.top_3_actions     || [],
+        watchlist:         rev.watchlist         || [],
+        risks_to_watch:    rev.risks_to_watch    || [],
+        opportunities:     rev.opportunities     || [],
+        portfolio_badges:  rev.portfolio_badges  || [],
+        investor_profile:  rev.investor_profile  || {},
+        income_summary:    rev.income_summary    || {},
+        kes_impact_note:   rev.kes_impact_note   || "",
+        next_review_focus: rev.next_review_focus || "",
+      };
+
+  renderAgenticReview(agentMap, summary);
 }
 
 async function loadFxRates() {

@@ -1044,11 +1044,8 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     run_agent("summary", _prompt_summary,
               agent_results, verifier_result)
 
-    # Mark job complete
-    state["_finished_at"] = datetime.utcnow().isoformat()
-    _save_job(job_id, user_id, state)
-
-    # Save final review to config — always save even if summary is partial
+    # Save final review to config FIRST (before marking complete)
+    # so cfg is ready when the UI polls and sees status=completed
     from db import cfg_set
     final   = state["summary"].get("result") or {}
     agents_data = {
@@ -1061,7 +1058,6 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         "date":    datetime.today().strftime("%Y-%m-%d"),
         "agentic": True,
         "agents":  agents_data,
-        # Spread summary fields at top level for backward compat
         "headline":         final.get("headline", "Portfolio Review"),
         "overall_rating":   final.get("overall_rating", "NEUTRAL"),
         "executive_summary":final.get("executive_summary", ""),
@@ -1077,6 +1073,10 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         **final,
     }
     cfg_set(user_id, "last_review", json.dumps(payload))
+
+    # Mark job complete AFTER cfg is saved
+    state["_finished_at"] = datetime.utcnow().isoformat()
+    _save_job(job_id, user_id, state)
 
 
 def start_pipeline(user_id, api_key, portfolio, savings):
