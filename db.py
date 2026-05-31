@@ -454,6 +454,40 @@ def _migrate(conn):
         except Exception:
             try: conn.rollback()
             except: pass
+
+    # Ensure review_jobs table exists (may not exist on older deployments)
+    # Uses TEXT for agents column (not JSONB) to avoid cast failures
+    if is_pg():
+        try:
+            conn.cursor().execute("""
+                CREATE TABLE IF NOT EXISTS review_jobs (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    agents TEXT
+                )
+            """)
+            conn.commit()
+        except Exception:
+            try: conn.rollback()
+            except: pass
+    else:
+        try:
+            conn.cursor().execute("""
+                CREATE TABLE IF NOT EXISTS review_jobs (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    agents TEXT
+                )
+            """)
+            conn.commit()
+        except Exception:
+            pass
     for table, col in migrations:
         try:
             if is_pg():

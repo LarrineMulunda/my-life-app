@@ -708,21 +708,29 @@ def _save_job(job_id, user_id, agents_state):
             pass
         cur = conn.cursor()
         if is_pg():
+            # Use TEXT cast not ::jsonb to avoid failures on large/special payloads
             cur.execute("""
                 INSERT INTO review_jobs (id,user_id,status,started_at,finished_at,agents)
-                VALUES (%s,%s,%s,%s,%s,%s::jsonb)
+                VALUES (%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET
-                  status=EXCLUDED.status, finished_at=EXCLUDED.finished_at,
+                  status=EXCLUDED.status,
+                  finished_at=EXCLUDED.finished_at,
                   agents=EXCLUDED.agents
             """, (job_id, user_id, status,
                   agents_state.get("_started_at",""), finished, agents_json))
         else:
             cur.execute("""
-                INSERT OR REPLACE INTO review_jobs (id,user_id,status,started_at,finished_at,agents)
+                INSERT OR REPLACE INTO review_jobs
+                    (id,user_id,status,started_at,finished_at,agents)
                 VALUES (?,?,?,?,?,?)
             """, (job_id, user_id, status,
                   agents_state.get("_started_at",""), finished, agents_json))
         conn.commit()
+    except Exception as e:
+        # Log the error but don't crash the pipeline
+        print(f"[_save_job] ERROR saving job {job_id}: {e}", flush=True)
+        try: conn.rollback()
+        except: pass
     finally:
         conn.close()
 
@@ -738,11 +746,19 @@ def get_job(job_id, user_id):
         if not r:
             return None
         d = dict(r)
+        # agents can be TEXT or JSONB — normalize to dict
         if d.get("agents"):
-            try:
-                d["agents"] = json.loads(d["agents"])
-            except Exception:
-                pass
+            agents_val = d["agents"]
+            if isinstance(agents_val, str):
+                try:
+                    d["agents"] = json.loads(agents_val)
+                except Exception:
+                    d["agents"] = {}
+            elif isinstance(agents_val, dict):
+                pass  # already parsed (JSONB column)
+        # Normalize timestamps
+        for k in ("started_at","finished_at"):
+            if d.get(k): d[k] = str(d[k])[:19]
         return d
     finally:
         conn.close()
@@ -756,7 +772,15 @@ def list_jobs(user_id, limit=10):
             f"SELECT id,status,started_at,finished_at FROM review_jobs "
             f"WHERE user_id={ph()} ORDER BY started_at DESC LIMIT {ph()}",
             (user_id, limit))
-        return [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
+        # Ensure id is always a string (never None)
+        for r in rows:
+            r["id"] = str(r.get("id") or "")
+            for k in ("started_at","finished_at"):
+                if r.get(k): r[k] = str(r[k])[:19]
+        return rows
+    except Exception:
+        return []
     finally:
         conn.close()
 

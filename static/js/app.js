@@ -16,7 +16,21 @@ function toast(msg, type="success") {
   clearTimeout(_tt); _tt = setTimeout(() => el.className = "", 3200);
 }
 
+// ── Client cache (30s TTL for GET requests) ──────────────────────────────────
+const _cache = {};
+const _CACHE_TTL = 30000;
+const _NO_CACHE  = ["/api/portfolio/review/poll", "/api/prices/anomalies"];
+
+function clearCache(prefix) {
+  Object.keys(_cache).forEach(k => { if (!prefix || k.startsWith(prefix)) delete _cache[k]; });
+}
+
 async function api(method, url, body) {
+  const canCache = method === "GET" && !_NO_CACHE.some(p => url.startsWith(p));
+  if (canCache && _cache[url]) {
+    const {data, ts} = _cache[url];
+    if (Date.now() - ts < _CACHE_TTL) return data;
+  }
   const r = await fetch(url, {
     method,
     headers: body ? {"Content-Type":"application/json"} : {},
@@ -37,12 +51,43 @@ function switchTab(name) {
   document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
   document.querySelector(`[onclick="switchTab('${name}')"]`).classList.add("active");
   document.getElementById("tab-"+name).classList.add("active");
+  // Always reload review from DB when switching to review tab
+  if (name === "review") {
+    delete _cache["/api/portfolio/review"]; // force fresh read
+    loadReview();
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
    OVERVIEW
 ══════════════════════════════════════════════════════════════════════════ */
 let _netWorthChart = null;
+
+async function loadAll() {
+  // One round trip — pre-warms the cache for each individual endpoint
+  const d = await api("GET", "/api/investments/all");
+  if (d && d.ok) {
+    // Pre-populate cache so individual load functions return instantly
+    const now = Date.now();
+    if (d.stocks)   _cache["/api/stocks"]                  = {data: d.stocks,   ts: now};
+    if (d.overview) _cache["/api/investments/overview"]    = {data: d.overview, ts: now};
+    if (d.savings)  _cache["/api/savings"]                 = {data: d.savings,  ts: now};
+    if (d.fx_rates) _cache["/api/fx-rates"]                = {data: {rates: d.fx_rates, as_of: "today"}, ts: now};
+    if (d.lots)     _cache["/api/stocks/lots"]             = {data: {lots: d.lots},      ts: now};
+  }
+  // Now call individual functions — they read from cache (instant) or fetch if cache miss
+  await Promise.all([
+    loadOverview(),
+    loadStocks(),
+    loadSavings(),
+    loadFxRates(),
+    loadActiveLots(),
+  ]);
+  // Review loads separately (always reads from DB, not affected by combined endpoint)
+  loadReview();
+  // Show anomaly panel if needed
+  if (d?.pending_anomalies > 0) loadAnomalies();
+}
 
 async function loadOverview() {
   const d = await api("GET", "/api/investments/overview");
@@ -953,7 +998,7 @@ async function addSaving() {
   const currency = document.getElementById("s-currency")?.value || "KES";
   const d = await api("POST","/api/savings",{label,asset_class:cls,amount:amt,type,currency,date,note});
   if (d.ok) {
-    toast("Entry added ✓");
+    toast("Entry added ✓"); clearCache("/api/savings"); clearCache("/api/investments");
     document.getElementById("s-label").value="";
     document.getElementById("s-amount").value="";
     document.getElementById("s-note").value="";
@@ -986,7 +1031,7 @@ async function saveSavingEdit() {
     currency:   document.getElementById("es-currency")?.value || "KES",
   };
   const d = await api("PUT",`/api/savings/${id}`,payload);
-  if (d.ok) { closeModal("edit-saving-modal"); toast("Entry updated ✓"); loadSavings(); loadOverview(); }
+  if (d.ok) { closeModal("edit-saving-modal"); toast("Entry updated ✓"); clearCache("/api/savings"); clearCache("/api/investments"); loadSavings(); loadOverview(); }
 }
 
 async function deleteSaving(id) {
@@ -1049,12 +1094,20 @@ async function startAgenticReview() {
     return;
   }
 
+  if (!r.job_id) {
+    toast("Could not start review — no job_id returned. Check API key in Settings.", "error");
+    btn.disabled = false; btn.textContent = "✦ Generate Review";
+    console.error("[review] No job_id in response:", r);
+    return;
+  }
+
   _activeJobId = r.job_id;
+  console.log("[review] Started job:", _activeJobId);
   btn.textContent = "Running…";
 
   // Show pipeline
   const pipeline = document.getElementById("agent-pipeline");
-  pipeline.style.display = "block";
+  if (pipeline) pipeline.style.display = "block";
   renderPipeline({});
 
   // Start polling
@@ -1063,8 +1116,23 @@ async function startAgenticReview() {
 }
 
 async function pollReview(jobId) {
+  if (!jobId || jobId === "undefined") {
+    console.error("[review] pollReview called with invalid jobId:", jobId);
+    clearInterval(_pollTimer); _pollTimer = null;
+    return;
+  }
   const job = await api("GET", `/api/portfolio/review/poll/${jobId}`);
-  if (job.error) return;
+  if (job.error) {
+    console.warn("[review] poll error:", job.error, "for job:", jobId);
+    // If job not found after a while, stop polling and load from config
+    if (job.error === "Job not found") {
+      clearInterval(_pollTimer); _pollTimer = null;
+      const btn = document.getElementById("gen-review-btn");
+      if (btn) { btn.disabled=false; btn.textContent="✦ Generate Review"; }
+      setTimeout(() => loadReview(), 1000); // try to show whatever was saved
+    }
+    return;
+  }
 
   const agents = job.agents || {};
   renderPipeline(agents);
@@ -1147,7 +1215,23 @@ function renderPipeline(agents) {
 
 function renderAgenticReview(agents, summary) {
   const wrap = document.getElementById("review-content");
-  if (!wrap) return;
+  if (!wrap) { console.warn("[review] review-content div not found"); return; }
+  try {
+    _renderAgenticReviewInner(agents, summary, wrap);
+  } catch(err) {
+    console.error("[review] renderAgenticReview error:", err);
+    wrap.innerHTML = `
+      <div class="panel" style="text-align:center;padding:2rem">
+        <p style="color:var(--red);font-family:var(--font-mono);font-size:.82rem">
+          ⚠ Error rendering review: ${err.message}
+        </p>
+        <p style="color:var(--text3);font-size:.78rem;margin-top:.5rem">Open browser console for details.</p>
+        <button class="btn btn-primary" style="margin-top:1rem" onclick="startAgenticReview()">↻ Re-run Review</button>
+      </div>`;
+  }
+}
+
+function _renderAgenticReviewInner(agents, summary, wrap) {
 
   // If summary is completely empty, show a partial-results message
   if (!summary || (!summary.headline && !summary.executive_summary && !summary.overall_rating)) {
@@ -1607,7 +1691,11 @@ function renderAgenticReview(agents, summary) {
 
 async function loadReview() {
   const wrap = document.getElementById("review-content");
+  // Always read latest from DB — never serve stale cached review
+  delete _cache["/api/portfolio/review"];
   const raw  = await api("GET", "/api/portfolio/review");
+  console.log("[review] GET /api/portfolio/review →", raw?.review ? "has data" : "no data",
+    raw?.review?.date, "agents:", Object.keys(raw?.review?.agents||{}).join(","));
 
   if (!raw || !raw.review) {
     if (wrap) wrap.innerHTML = `
@@ -1642,10 +1730,13 @@ async function loadReview() {
   const agentMap = Object.fromEntries(
     Object.entries(rev.agents).map(([k, v]) => [k, { status: "done", result: v }])
   );
+  console.log("[review] agentMap keys:", Object.keys(agentMap).join(","));
 
   // summary is the stored result object — also available top-level in rev
   // Prefer rev.agents.summary, fall back to top-level rev fields
   const summaryFromAgents = rev.agents.summary || {};
+  console.log("[review] summaryFromAgents keys:", Object.keys(summaryFromAgents).join(","),
+    "headline:", summaryFromAgents.headline?.substring?.(0,30));
   const summary = Object.keys(summaryFromAgents).length > 0
     ? summaryFromAgents
     : {
@@ -2022,7 +2113,7 @@ async function confirmImport() {
   if (data.ok) {
     document.getElementById("import-result").innerHTML =
       `<span style="color:var(--green)">✓ ${data.message}</span>`;
-    toast(`✓ ${data.saved} lot(s) imported`);
+    toast(`✓ ${data.saved} lot(s) imported`); clearCache("/api/investments"); clearCache("/api/stocks");
     setTimeout(() => { cancelUpload(); loadStocks(); loadOverview(); loadActiveLots(); }, 1500);
   }
 }
