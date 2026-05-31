@@ -890,58 +890,94 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     }
     run_agent("verifier", _prompt_verifier, agent_results)
 
-    # ── Verifier: re-route agents needing revision ───────────────────────────
+    # ── Verifier: resend flagged items to agents in PARALLEL threads ─────────
     verifier_result = state["verifier"].get("result", {})
-    revisions = verifier_result.get("agent_revisions_needed", {})
+    revisions       = verifier_result.get("agent_revisions_needed", {})
 
-    for agent_id in ("performance","rebalancing","analyst","thematic","corporate"):
+    ALL_REVISIONABLE = (
+        "performance", "rebalancing", "analyst",
+        "thematic", "corporate", "dividend", "health",
+    )
+    BASE_ARGS = {
+        "performance": lambda: (ctx,),
+        "rebalancing": lambda: (ctx,),
+        "analyst":     lambda: (tickers_str,),
+        "thematic":    lambda: (ctx,),
+        "corporate":   lambda: (tickers_str,),
+        "dividend":    lambda: (ctx, portfolio),
+        "health":      lambda: (ctx, portfolio),
+    }
+    PROMPT_MAP = {
+        "performance": _prompt_performance,
+        "rebalancing": _prompt_rebalancing,
+        "thematic":    _prompt_thematic,
+        "corporate":   _prompt_corporate,
+        "dividend":    _prompt_dividend,
+        "health":      _prompt_health,
+    }
+
+    def _revise_agent(agent_id, feedback, items):
+        """Revision worker - runs in its own thread, parallel to siblings."""
+        orig_result = json.dumps(state[agent_id].get("result", {}))
+        orig_prompt = PROMPT_MAP.get(agent_id, lambda *a: "")(*BASE_ARGS.get(agent_id, lambda: ())())
+        sep = chr(10)
+        revision_txt = sep.join([
+            "REVISION REQUEST - Verifier flagged issues in your previous output.",
+            "",
+            "VERIFIER FEEDBACK: " + str(feedback),
+            "SPECIFIC ISSUES: " + json.dumps(items),
+            "",
+            "YOUR PREVIOUS OUTPUT:",
+            orig_result,
+            "",
+            "Provide a fully corrected version in the same JSON format as before.",
+            "",
+            orig_prompt,
+        ])
+        state[agent_id]["status"] = "revising"
+        _save_job(job_id, user_id, state)
+        try:
+            text   = _gemini(api_key, revision_txt, timeout=90)
+            result = _extract_json(text)
+            state[agent_id]["status"]  = "done"
+            state[agent_id]["result"]  = result
+            state[agent_id]["revised"] = True
+            agent_results[agent_id]    = result
+        except Exception as e:
+            state[agent_id]["status"]         = "done"   # keep original on error
+            state[agent_id]["revision_error"] = str(e)
+        _save_job(job_id, user_id, state)
+
+    # Spawn one thread per flagged agent - all revisions run in parallel
+    revision_threads = []
+    for agent_id in ALL_REVISIONABLE:
         rev = revisions.get(agent_id, {})
-        if rev.get("needs_revision") and state[agent_id].get("status") == "done":
-            feedback = rev.get("feedback","")
-            items    = rev.get("items", [])
-            if feedback or items:
-                # Build a revised prompt incorporating verifier feedback
-                orig_result = json.dumps(state[agent_id].get("result", {}))
-                revision_prompt_map = {
-                    "performance": _prompt_performance,
-                    "rebalancing": _prompt_rebalancing,
-                    "thematic":    _prompt_thematic,
-                    "corporate":   _prompt_corporate,
-                    "dividend":    _prompt_dividend,
-                    "health":      _prompt_health,
-                }
-                base_args = {
-                    "performance": (ctx,),
-                    "rebalancing": (ctx,),
-                    "analyst":     (tickers_str,),
-                    "thematic":    (ctx,),
-                    "corporate":   (tickers_str,),
-                }
-                # Create a revision prompt with feedback
-                original_prompt = revision_prompt_map[agent_id](*base_args[agent_id])
-                revision_prompt = (
-                    f"REVISION REQUEST — Your previous output needs correction.\n\n"
-                    f"VERIFIER FEEDBACK: {feedback}\n"
-                    f"SPECIFIC ISSUES: {json.dumps(items)}\n\n"
-                    f"YOUR PREVIOUS OUTPUT:\n{orig_result}\n\n"
-                    f"Please provide a corrected version.\n\n"
-                    + original_prompt
-                )
-                state[agent_id]["status"] = "revising"
-                _save_job(job_id, user_id, state)
-                try:
-                    text   = _call(api_key, revision_prompt, timeout=90)
-                    result = _extract_json(text)
-                    state[agent_id]["status"]   = "done"
-                    state[agent_id]["result"]   = result
-                    state[agent_id]["revised"]  = True
-                    agent_results[agent_id]     = result
-                except Exception as e:
-                    state[agent_id]["status"]         = "done"  # keep original on error
-                    state[agent_id]["revision_error"] = str(e)
-                _save_job(job_id, user_id, state)
+        if not rev.get("needs_revision"):
+            continue
+        feedback = rev.get("feedback", "")
+        items    = rev.get("items", [])
+        if not feedback and not items:
+            continue
+        t = threading.Thread(
+            target=_revise_agent,
+            args=(agent_id, feedback, items),
+            daemon=True,
+        )
+        revision_threads.append(t)
+        t.start()
 
-    # ── Agent 7: Summary (waits for verifier + any revisions) ────────────────
+    # Summary MUST wait for ALL revision threads before running
+    for t in revision_threads:
+        t.join(timeout=120)
+
+    # Refresh agent_results with revised outputs
+    agent_results = {
+        aid: state[aid].get("result", {})
+        for aid in ALL_REVISIONABLE
+    }
+
+    # ── Agent 9: Summary (waits for verifier + ALL revisions) ────────────────
+    # ── Agent 9: Summary (waits for verifier + ALL revisions) ────────────────
     run_agent("summary", _prompt_summary,
               agent_results, verifier_result)
 

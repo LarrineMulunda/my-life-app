@@ -999,13 +999,15 @@ let _pollTimer  = null;
 let _activeJobId = null;
 
 const AGENT_META = {
-  performance: { icon:"📊", name:"Performance Analyst",   desc:"Metrics, returns, winners & losers" },
-  rebalancing: { icon:"⚖️", name:"Rebalancing Advisor",   desc:"Allocation & rebalancing actions" },
-  analyst:     { icon:"🔍", name:"Analyst Intelligence",  desc:"Ratings, targets, hot picks" },
-  thematic:    { icon:"🌐", name:"Thematic Researcher",   desc:"10–30yr megatrends & opportunities" },
-  corporate:   { icon:"📅", name:"Corporate Actions",     desc:"Dividends, earnings, splits" },
-  verifier:    { icon:"✅", name:"Fact Verifier",          desc:"Cross-checks all findings" },
-  summary:     { icon:"✦",  name:"Executive Summary",     desc:"Actionable final report" },
+  performance: { icon:"📊", name:"Performance Analyst",    desc:"Metrics, returns, health score, winners & losers" },
+  rebalancing: { icon:"⚖️", name:"Rebalancing Advisor",    desc:"Allocation advice with trim figures" },
+  analyst:     { icon:"🔍", name:"Analyst Intelligence",   desc:"Multi-source ratings per ticker (parallel)" },
+  thematic:    { icon:"🌐", name:"Thematic Researcher",    desc:"10–30yr megatrends & exposure radar" },
+  corporate:   { icon:"📅", name:"Corporate Actions",      desc:"Future-dated dividends, earnings, splits" },
+  dividend:    { icon:"💰", name:"Dividend Intelligence",  desc:"YTD income received + full-year projection" },
+  health:      { icon:"🏥", name:"Portfolio Health",       desc:"Sharpe ratio, stress tests, investor profile" },
+  verifier:    { icon:"✅", name:"Fact Verifier",           desc:"Cross-checks all findings, resends low-confidence" },
+  summary:     { icon:"✦",  name:"Executive Summary",      desc:"Badges, investor type, top actions, watchlist" },
 };
 
 async function startAgenticReview() {
@@ -1058,22 +1060,31 @@ async function pollReview(jobId) {
 function renderPipeline(agents) {
   const track = document.getElementById("pipeline-track");
   if (!track) return;
-  const order = ["performance","rebalancing","analyst","thematic","corporate","verifier","summary"];
+  const order = ["performance","rebalancing","analyst","thematic","corporate","dividend","health","verifier","summary"];
   track.innerHTML = order.map(id => {
     const a    = agents[id] || {};
     const meta = AGENT_META[id] || {};
-    const st   = a.status || "waiting";
-    const cls  = st === "done" ? "agent-done" : st === "running" ? "agent-running" : st === "error" ? "agent-err" : "agent-wait";
-    const spin = st === "running" ? '<span class="agent-spinner"></span>' : "";
+    const st    = a.status || "waiting";
+    const cls   = st === "done"    ? "agent-done"    :
+                  st === "running" ? "agent-running"  :
+                  st === "revising"? "agent-running"  :
+                  st === "error"   ? "agent-err"      : "agent-wait";
+    const spin  = (st === "running" || st === "revising")
+                  ? '<span class="agent-spinner"></span>' : "";
+    const statusIcon = st==="done"?"✓":st==="revising"?"↻":st==="running"?"…":st==="error"?"✗":"·";
+    const descText   = st==="error"   ? (a.error||"Error")
+                     : st==="revising"? "Revising based on verifier feedback…"
+                     : meta.desc;
     return `<div class="agent-step ${cls}">
       <div class="agent-step-icon">${meta.icon}${spin}</div>
       <div class="agent-step-info">
-        <div class="agent-step-name">${meta.name}</div>
-        <div class="agent-step-desc">${st === "error" ? (a.error||"Error") : meta.desc}</div>
+        <div class="agent-step-name">
+          ${meta.name}
+          ${a.revised ? '<span style="font-size:.6rem;color:var(--gold2);margin-left:.4rem">↻ revised</span>' : ""}
+        </div>
+        <div class="agent-step-desc">${descText}</div>
       </div>
-      <div class="agent-step-status">
-        ${st==="done"?"✓":st==="running"?"…":st==="error"?"✗":"·"}
-      </div>
+      <div class="agent-step-status">${statusIcon}</div>
     </div>`;
   }).join("");
 }
