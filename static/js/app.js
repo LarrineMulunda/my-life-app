@@ -124,15 +124,41 @@ async function loadOverview() {
   if (investorProfile) renderInvestorProfile(investorProfile);
 }
 
+const BADGE_ICONS = {
+  "Diversification Master": "🌍",
+  "Dividend Investor":      "💰",
+  "Growth Hunter":          "🚀",
+  "Africa First":           "🌍",
+  "Tech Forward":           "💻",
+  "Income Builder":         "📈",
+  "Risk Manager":           "🛡️",
+  "Long Term Thinker":      "⏳",
+  "Global Citizen":         "🌐",
+  "Growth Potential":       "📈",
+  "Risk Management":        "🛡️",
+  "Diversification Needed": "🥧",
+};
+
+function badgeIcon(b) {
+  // Use our known map first; fall back to icon field only if it's an emoji
+  const known = BADGE_ICONS[b.badge];
+  if (known) return known;
+  // Detect emoji: code point > 0x2000
+  const ico = (b.icon||"").trim();
+  if (ico && ico.codePointAt(0) > 0x2000) return ico;
+  return "✦";
+}
+
 function renderPortfolioBadges(badges) {
   const el = document.getElementById("portfolio-badges");
   if (!el || !badges?.length) return;
+  const valid = badges.filter(b => b.awarded !== false && b.badge);
+  if (!valid.length) return;
   el.style.cssText = "display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem";
-  el.innerHTML = badges.filter(b => b.awarded !== false).map(b => `
-    <div class="portfolio-badge">
-      <span class="badge-icon">${b.icon||"✦"}</span>
+  el.innerHTML = valid.map(b => `
+    <div class="portfolio-badge" title="${b.description||""}">
+      <span class="badge-icon">${badgeIcon(b)}</span>
       <span class="badge-name">${b.badge}</span>
-      <span class="badge-desc">${b.description||""}</span>
     </div>`).join("");
 }
 

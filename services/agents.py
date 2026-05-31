@@ -90,25 +90,41 @@ AGENTS = [
 
 # ── Gemini call ───────────────────────────────────────────────────────────────
 
-def _gemini(api_key, prompt, timeout=90):
+def _gemini(api_key, prompt, timeout=90, retries=3):
+    """Call Gemini with exponential back-off retry on rate-limit / server errors."""
+    import time
     if not HAS_REQUESTS:
         raise RuntimeError("requests not installed")
-    resp = _req.post(
-        f"{GEMINI_URL}?key={api_key}",
-        json={
-            "contents":           [{"parts": [{"text": prompt}]}],
-            "tools":              [{"google_search": {}}],
-            "generationConfig":   {"temperature": 0.3},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return "".join(
-        p.get("text", "")
-        for p in data.get("candidates", [{}])[0]
-                     .get("content", {}).get("parts", [])
-    )
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = _req.post(
+                f"{GEMINI_URL}?key={api_key}",
+                json={
+                    "contents":         [{"parts": [{"text": prompt}]}],
+                    "tools":            [{"google_search": {}}],
+                    "generationConfig": {"temperature": 0.3},
+                },
+                timeout=timeout,
+            )
+            # 429 = rate limit, 500/503 = server error → retry
+            if resp.status_code in (429, 500, 503):
+                wait = 2 ** attempt * 5  # 5s, 10s, 20s
+                time.sleep(wait)
+                last_err = f"HTTP {resp.status_code}"
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return "".join(
+                p.get("text", "")
+                for p in data.get("candidates", [{}])[0]
+                             .get("content", {}).get("parts", [])
+            )
+        except Exception as e:
+            last_err = str(e)
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt * 3)  # 3s, 6s
+    raise RuntimeError(f"Gemini failed after {retries} attempts: {last_err}")
 
 def _extract_json(text):
     import re
@@ -818,19 +834,23 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
 
         per_ticker_results = {}
         lock = threading.Lock()
+        # Gemini free tier: 15 RPM. Semaphore limits concurrent calls to 8
+        # so all finish within ~1 minute without hitting the rate limit.
+        _rate_sem = threading.Semaphore(8)
 
         def fetch_one(h):
             ticker = h["ticker"]
             exch   = h["exchange"]
-            try:
-                prompt = _prompt_analyst_multithreaded(ticker, exch, ctx)
-                text   = _gemini(api_key, prompt, timeout=60)
-                result = _extract_json(text)
-                if not result.get("skip", False) and result.get("key_thesis"):
-                    with lock:
-                        per_ticker_results[ticker] = result
-            except Exception as e:
-                pass  # Skip tickers where Gemini fails
+            with _rate_sem:
+                try:
+                    prompt = _prompt_analyst_multithreaded(ticker, exch, ctx)
+                    text   = _gemini(api_key, prompt, timeout=60)
+                    result = _extract_json(text)
+                    if not result.get("skip", False) and result.get("key_thesis"):
+                        with lock:
+                            per_ticker_results[ticker] = result
+                except Exception:
+                    pass  # Skip tickers where Gemini fails or rate-limits
 
         ticker_threads = [
             threading.Thread(target=fetch_one, args=(h,), daemon=True)
