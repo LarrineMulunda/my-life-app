@@ -195,7 +195,9 @@ CREATE TABLE IF NOT EXISTS goals (
     target_date DATE,
     note TEXT DEFAULT '',
     active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_date DATE NOT NULL
+    created_date DATE NOT NULL,
+    link_type TEXT DEFAULT NULL,
+    link_label TEXT DEFAULT NULL
 );
 CREATE TABLE IF NOT EXISTS goal_contributions (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -373,7 +375,9 @@ CREATE TABLE IF NOT EXISTS goals (
     target_date TEXT,
     note TEXT DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
-    created_date TEXT NOT NULL
+    created_date TEXT NOT NULL,
+    link_type TEXT DEFAULT NULL,
+    link_label TEXT DEFAULT NULL
 );
 CREATE TABLE IF NOT EXISTS goal_contributions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -428,6 +432,8 @@ def _migrate(conn):
         ("stock_sales", "currency TEXT NOT NULL DEFAULT 'KES'"),
         ("stock_sales", "lot_id INTEGER"),
         ("habits",     "icon TEXT DEFAULT '✓'"),
+        ("goals",      "link_type TEXT DEFAULT NULL"),
+        ("goals",      "link_label TEXT DEFAULT NULL"),
         ("habits",     "color TEXT DEFAULT '#C9A84C'"),
         ("habits",     "category TEXT DEFAULT 'General'"),
     ]

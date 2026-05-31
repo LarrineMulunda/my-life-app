@@ -846,13 +846,17 @@ def resolve_anomaly(aid):
 def _save_snapshot():
     conn = get_db()
     try:
-        port  = _build_portfolio(conn)
-        rows  = _fetchall(conn,
+        port     = _build_portfolio(conn)
+        fx_rates = _get_fx_rates(conn)
+        rows     = _fetchall(conn,
             f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
+        # Convert savings to KES using live FX rates
         other = sum(
-            float(r["amount"]) if r["type"] == "deposit" else -float(r["amount"])
+            _to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
+            if r["type"] == "deposit"
+            else -_to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
             for r in rows)
-        stock = port["total_market"]  # already in KES
+        stock = port["total_market"]  # market value in KES (uses live prices)
         total = stock + other
         today = _today()
         _exec(conn, upsert_snapshot_sql(),
@@ -1023,6 +1027,68 @@ def review_history():
 
 
 # ── Config / settings ─────────────────────────────────────────────────────────
+
+@bp.route("/api/export/prices.csv")
+@approved_required
+def export_prices():
+    conn = get_db()
+    try:
+        rows = _fetchall(conn,
+            "SELECT * FROM global_prices ORDER BY ticker, date DESC")
+    finally:
+        conn.close()
+    import csv, io
+    out = io.StringIO()
+    w   = csv.writer(out)
+    w.writerow(["Date","Ticker","Exchange","Price","Currency","Note"])
+    for r in rows:
+        w.writerow([r["date"],r["ticker"],r["exchange"],
+                    r["price"],r.get("currency","KES"),r.get("note","")])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment;filename=price_history.csv"})
+
+@bp.route("/api/export/snapshots.csv")
+@approved_required
+def export_snapshots():
+    conn = get_db()
+    try:
+        rows = _fetchall(conn,
+            f"SELECT * FROM portfolio_snapshots WHERE user_id={ph()} ORDER BY date",
+            (uid(),))
+    finally:
+        conn.close()
+    import csv, io
+    out = io.StringIO()
+    w   = csv.writer(out)
+    w.writerow(["Date","Total Value KES","Stock Value KES","Other Value KES",
+                "Total Cost KES","Total Gain KES"])
+    for r in rows:
+        w.writerow([r["date"],r["total_value"],r["stock_value"],r["other_value"],
+                    r["total_cost"],r["total_gain"]])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment;filename=snapshots.csv"})
+
+@bp.route("/api/export/anomalies.csv")
+@approved_required
+def export_anomalies():
+    conn = get_db()
+    try:
+        rows = _fetchall(conn,
+            "SELECT * FROM price_anomalies ORDER BY created_at DESC")
+    finally:
+        conn.close()
+    import csv, io
+    out = io.StringIO()
+    w   = csv.writer(out)
+    w.writerow(["Created","Type","Ticker","Exchange","Fetched","Previous",
+                "Pct Change","Status","Reviewed Value","Note"])
+    for r in rows:
+        w.writerow([str(r.get("created_at",""))[:19],r["type"],r["ticker"],
+                    r.get("exchange",""),r["fetched_value"],r.get("previous_value",""),
+                    r.get("pct_change",""),r["status"],
+                    r.get("reviewed_value",""),r.get("review_note","")])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment;filename=price_anomalies.csv"})
 
 @bp.route("/api/config")
 @approved_required

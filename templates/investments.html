@@ -51,7 +51,10 @@
   <div class="panel">
     <div class="panel-title" style="justify-content:space-between">
       <span>Net Worth Over Time</span>
-      <button class="btn btn-ghost btn-sm" onclick="takeSnapshot()">+ Snapshot</button>
+      <div style="display:flex;gap:.5rem">
+        <a href="/api/export/snapshots.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a>
+        <button class="btn btn-ghost btn-sm" onclick="takeSnapshot()">+ Snapshot</button>
+      </div>
     </div>
     <div id="chart-empty" style="display:none"><p class="empty-msg">No snapshots yet — fetch prices once to begin tracking.</p></div>
     <div id="chart-wrap" style="position:relative;height:200px"><canvas id="net-worth-chart"></canvas></div>
@@ -87,6 +90,7 @@
     <div class="panel-title" style="padding:1rem 1.2rem .8rem;justify-content:space-between">
       <span>Holdings</span>
       <div style="display:flex;gap:.5rem;align-items:center">
+        <button class="btn btn-ghost btn-sm" onclick="tableToCSV('holdings-table','holdings.csv')" title="Export">↓ CSV</button>
         <input type="text" id="holdings-search" placeholder="Filter…"
                style="font-size:.75rem;padding:.28rem .6rem;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);width:110px"
                oninput="filterHoldings()"/>
@@ -145,7 +149,7 @@
   <div class="panel" id="anomalies-panel" style="display:none">
     <div class="panel-title" style="justify-content:space-between">
       <span>⚠ Price Anomalies</span>
-      <button class="btn btn-ghost btn-sm" onclick="loadAnomalies()">↻ Refresh</button>
+      <div style="display:flex;gap:.4rem"><a href="/api/export/anomalies.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a><button class="btn btn-ghost btn-sm" onclick="loadAnomalies()">↻ Refresh</button></div>
     </div>
     <p class="panel-hint">Prices that changed significantly were flagged and re-verified by Agent 3. Items below need your attention.</p>
     <div id="anomalies-body"></div>
@@ -250,7 +254,7 @@
   </div>
 
   <div class="panel" id="price-history-panel" style="display:none">
-    <div class="panel-title">Price History</div>
+    <div class="panel-title" style="justify-content:space-between"><span>Price History</span><a href="/api/export/prices.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a></div>
     <div class="table-wrap">
       <table class="data-table">
         <thead><tr><th>Date</th><th>Ticker</th><th class="hide-xs">Exchange</th><th class="num-col">Price</th><th class="hide-sm">Note</th><th></th></tr></thead>
@@ -354,6 +358,7 @@
     <div class="panel-title" style="justify-content:space-between">
       <span>All Entries</span>
       <a href="/api/export/savings.csv" class="btn btn-ghost btn-sm" download>↓ CSV</a>
+        <button class="btn btn-ghost btn-sm" onclick="tableToCSV('savings-table','savings.csv')">↓ Table</button>
     </div>
     <div class="table-wrap">
       <table class="data-table" id="savings-table">
@@ -420,6 +425,7 @@
     <div id="fx-table-wrap" style="margin-bottom:1rem"></div>
     <button class="btn btn-primary" id="fetch-fx-btn" onclick="fetchFxRates()">↻ Update FX Rates via Gemini</button>
     <span id="fx-result" style="font-size:.78rem;font-family:var(--font-mono);margin-left:.8rem"></span>
+    <div id="fx-agent-progress" style="display:none;margin-top:1rem"></div>
   </div>
 </div>
 

@@ -246,6 +246,28 @@ async function loadStocks() {
 }
 
 
+
+// ── Universal CSV export ──────────────────────────────────────────────────────
+function tableToCSV(tableId, filename) {
+  var table = document.getElementById(tableId);
+  if (!table) return;
+  var rows = Array.from(table.querySelectorAll("tr"));
+  var lines = rows.map(function(row) {
+    var cells = Array.from(row.querySelectorAll("th,td"));
+    return cells.map(function(c) {
+      var t = (c.innerText || "").replace(/[\r\n]+/g, " ").trim();
+      return (t.indexOf(",") >= 0 || t.indexOf('"') >= 0) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    }).join(",");
+  });
+  var csv = lines.join("\n");
+  var blob = new Blob([csv], {type:"text/csv"});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = filename || "export.csv";
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
 // ── Holdings table (replaces cards) ─────────────────────────────────────────
 let _holdings = [];
 
@@ -1025,13 +1047,47 @@ function renderAgenticReview(agents, summary) {
       <td class="hide-sm" style="color:var(--text2)">${w.time_horizon||"—"}</td>
     </tr>`).join("");
 
-  // Analyst views
-  const perf    = agents.performance?.result || {};
-  const reb     = agents.rebalancing?.result || {};
-  const analyst = agents.analyst?.result || {};
-  const thematic = agents.thematic?.result || {};
-  const corp    = agents.corporate?.result || {};
-  const verifier = agents.verifier?.result || {};
+  // Use verifier high_confidence_only filter where available
+  const perf     = agents.performance?.result  || {};
+  const reb      = agents.rebalancing?.result  || {};
+  const analyst  = agents.analyst?.result      || {};
+  const thematic = agents.thematic?.result     || {};
+  const corp     = agents.corporate?.result    || {};
+  const verifier = agents.verifier?.result     || {};
+
+  // High-confidence ticker lists from verifier
+  const hcTickers  = new Set((verifier.high_confidence_only?.analyst_views    || []).map(t=>t.toUpperCase()));
+  const hcDivs     =          verifier.high_confidence_only?.dividends         || null;
+  const hcCorpActs =          verifier.high_confidence_only?.corporate_actions || null;
+  const hcPicks    =          verifier.high_confidence_only?.hot_picks         || null;
+
+  // Filter helpers
+  const today = new Date().toISOString().split("T")[0];
+  const isFuture = (dateStr) => !dateStr || dateStr >= today;
+
+  // Filter analyst views to high-confidence only (with thesis)
+  const filteredAnalystViews = (analyst.analyst_views||[]).filter(a =>
+    a.key_thesis && a.key_thesis.length > 10 &&
+    (hcTickers.size === 0 || hcTickers.has(a.ticker?.toUpperCase()))
+  );
+
+  // Filter hot picks: max 4, with thesis, high confidence
+  const filteredHotPicks = (analyst.hot_picks||[])
+    .filter(p => p.thesis && p.thesis.length > 10)
+    .slice(0, 4);
+
+  // Filter dividends: future only
+  const filteredDivs = (corp.dividends||[])
+    .filter(d => isFuture(d.ex_date) || isFuture(d.payment_date));
+
+  // Filter corporate actions: future only
+  const filteredCorpActs = (corp.corporate_actions||[])
+    .filter(a => isFuture(a.date));
+
+  // Filter key dates: future only
+  const filteredKeyDates = (corp.key_dates_next_30_days||[])
+    .filter(d => isFuture(d.date))
+    .sort((a,b) => a.date.localeCompare(b.date));
 
   wrap.innerHTML = `
     <!-- Executive Summary -->
@@ -1095,12 +1151,12 @@ function renderAgenticReview(agents, summary) {
 
     <!-- Analyst Views -->
     <div class="panel">
-      <div class="panel-title">🔍 Analyst Intelligence</div>
-      ${(analyst.analyst_views||[]).length ? `
+      <div class="panel-title" style="justify-content:space-between"><span>🔍 Analyst Intelligence</span><span style="font-size:.65rem;font-family:var(--font-mono);color:var(--text3)">HIGH confidence · multi-source · with thesis only</span></div>
+      ${filteredAnalystViews.length ? `
         <div class="table-wrap">
           <table class="data-table">
             <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Consensus</th><th>Target</th><th>Upside</th><th class="hide-sm">Thesis</th></tr></thead>
-            <tbody>${analyst.analyst_views.map(a=>`<tr>
+            <tbody>${filteredAnalystViews.map(a=>`<tr>
               <td class="wht mo">${a.ticker}</td>
               <td class="hide-xs"><span class="hc-exchange-badge">${a.exchange}</span></td>
               <td><span class="consensus-badge ${a.consensus}">${a.consensus}</span></td>
@@ -1110,10 +1166,10 @@ function renderAgenticReview(agents, summary) {
             </tr>`).join("")}</tbody>
           </table>
         </div>` : "<p class='empty-msg'>No analyst data fetched.</p>"}
-      ${(analyst.hot_picks||[]).length ? `
+      ${filteredHotPicks.length ? `
         <div style="margin-top:1.2rem">
           <div class="review-sub">Hot Picks</div>
-          ${analyst.hot_picks.map(p=>`<div class="pick-row">
+          ${filteredHotPicks.map(p=>`<div class="pick-row">
             <span class="mo wht">${p.ticker}</span>
             <span class="hc-exchange-badge hide-xs">${p.exchange}</span>
             <span style="color:var(--gold2)">${p.rating}</span>
@@ -1124,12 +1180,12 @@ function renderAgenticReview(agents, summary) {
 
     <!-- Corporate Actions -->
     <div class="panel">
-      <div class="panel-title">📅 Corporate Actions</div>
-      ${(corp.key_dates_next_30_days||[]).length ? `
+      <div class="panel-title" style="justify-content:space-between"><span>📅 Corporate Actions</span><span style="font-size:.65rem;font-family:var(--font-mono);color:var(--text3)">future events only</span></div>
+      ${filteredKeyDates.length ? `
         <div class="table-wrap">
           <table class="data-table">
             <thead><tr><th>Date</th><th>Ticker</th><th>Event</th><th class="hide-sm">Importance</th></tr></thead>
-            <tbody>${corp.key_dates_next_30_days.map(e=>`<tr>
+            <tbody>${filteredKeyDates.map(e=>`<tr>
               <td class="mo">${e.date}</td>
               <td class="wht mo">${e.ticker}</td>
               <td style="font-size:.8rem">${e.event}</td>
@@ -1137,10 +1193,10 @@ function renderAgenticReview(agents, summary) {
             </tr>`).join("")}</tbody>
           </table>
         </div>` : ""}
-      ${(corp.dividends||[]).length ? `
+      ${filteredDivs.length ? `
         <div style="margin-top:1rem">
           <div class="review-sub">Dividends</div>
-          ${corp.dividends.map(d=>`<div class="contrib-row">
+          ${filteredDivs.map(d=>`<div class="contrib-row">
             <span class="mo wht">${d.ticker}</span>
             <span style="color:var(--gold2)">${d.currency} ${d.declared_amount}</span>
             <span style="color:var(--text3);font-size:.75rem">Ex: ${d.ex_date||"—"} · Pay: ${d.payment_date||"—"}</span>
@@ -1250,15 +1306,58 @@ async function loadFxRates() {
 }
 
 async function fetchFxRates() {
-  // Update both buttons (one on Stocks tab, one on Settings tab)
+  const FX_AGENTS = [
+    {id:"agent1", icon:"📡", name:"FX Fetcher",   desc:"Fetching exchange rates"},
+    {id:"agent2", icon:"🔎", name:"Rate Checker",  desc:"Checking for anomalies"},
+    {id:"agent3", icon:"✅", name:"Rate Verifier", desc:"Verifying flagged rates"},
+  ];
+
+  // Show FX progress panel if it exists
+  const fxPanel = document.getElementById("fx-agent-progress");
+  if (fxPanel) {
+    fxPanel.style.display = "block";
+    fxPanel.innerHTML = `
+      <div class="pipeline-title" style="margin-bottom:.5rem">FX Rate Pipeline</div>
+      <div id="fx-agent-track" class="pipeline-track">
+        ${FX_AGENTS.map(a=>`<div class="agent-step agent-running">
+          <div class="agent-step-icon">${a.icon}<span class="agent-spinner"></span></div>
+          <div class="agent-step-info"><div class="agent-step-name">${a.name}</div><div class="agent-step-desc">${a.desc}</div></div>
+          <div class="agent-step-status">…</div>
+        </div>`).join("")}
+      </div>`;
+  }
+
   ["fetch-fx-btn","fetch-fx-btn2"].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { el.textContent="Fetching FX…"; el.disabled=true; }
+    if (el) { el.textContent="Running FX Pipeline…"; el.disabled=true; }
   });
-  const res     = document.getElementById("fx-result");
-  const inlineEl= document.getElementById("fx-inline-status");
+
+  const res      = document.getElementById("fx-result");
+  const inlineEl = document.getElementById("fx-inline-status");
+  if (inlineEl) inlineEl.textContent = "Fetching FX rates via 3-agent pipeline…";
 
   const d = await api("POST", "/api/fx-rates/fetch", {});
+
+  // Update agent progress
+  if (fxPanel && d.agents) {
+    const trk = document.getElementById("fx-agent-track");
+    if (trk) {
+      trk.innerHTML = FX_AGENTS.map(a => {
+        const ag  = d.agents[a.id] || {};
+        const st  = ag.status || "done";
+        const cls = st==="done"?"agent-done":st==="error"?"agent-err":"agent-wait";
+        const extra = a.id==="agent1" ? ` · ${ag.fetched||Object.keys(ag.rates||{}).length} rates`
+                    : a.id==="agent2" ? ` · ${ag.clean||0} clean, ${ag.flagged||0} flagged`
+                    : ` · ${ag.confirmed||0} confirmed`;
+        return `<div class="agent-step ${cls}">
+          <div class="agent-step-icon">${a.icon}</div>
+          <div class="agent-step-info"><div class="agent-step-name">${a.name}</div><div class="agent-step-desc">${a.desc+extra}</div></div>
+          <div class="agent-step-status">${st==="done"?"✓":st==="error"?"✗":"·"}</div>
+        </div>`;
+      }).join("");
+    }
+    setTimeout(() => { if(fxPanel) fxPanel.style.display="none"; }, 7000);
+  }
 
   ["fetch-fx-btn","fetch-fx-btn2"].forEach(id => {
     const el = document.getElementById(id);
@@ -1269,22 +1368,29 @@ async function fetchFxRates() {
   });
 
   if (d.ok) {
-    if (res) res.innerHTML = `<span style="color:var(--green)">✓ Rates updated ${d.date}</span>`;
-    if (inlineEl) {
-      const ratesList = Object.entries(d.rates||{})
-        .filter(([k])=>k!=="KES").map(([k,v])=>`1 ${k} = ${parseFloat(v).toFixed(2)} KES`).join(" · ");
-      inlineEl.innerHTML = `<span style="color:var(--green)">✓ FX updated ${d.date}</span> · ${ratesList}`;
-    }
+    const rates     = d.rates || {};
+    const ratesList = Object.entries(rates)
+      .filter(([k])=>k!=="KES")
+      .map(([k,v])=>`1 ${k} = ${parseFloat(v).toFixed(2)} KES`)
+      .join("  ·  ");
+    const anomalyNote = (d.manual_review?.length)
+      ? ` · <span style="color:var(--gold)">⚠ ${d.manual_review.length} rate(s) need review</span>` : "";
+    if (res) res.innerHTML = `<span style="color:var(--green)">✓ ${d.written||Object.keys(rates).length-1} rates updated ${d.date}</span>${anomalyNote}`;
+    if (inlineEl) inlineEl.innerHTML = `<span style="color:var(--green)">✓ Updated</span> · ${ratesList}`;
     toast("FX rates updated ✓");
     loadFxRates();
     loadStocks();
     loadOverview();
+    if (d.manual_review?.length) loadAnomalies();
   } else {
-    if (res) res.innerHTML = `<span style="color:var(--red)">✗ ${d.error}</span>`;
-    if (inlineEl) inlineEl.innerHTML = `<span style="color:var(--red)">✗ ${d.error||"FX fetch failed"}</span>`;
-    toast(d.error || "FX fetch failed", "error");
+    const errMsg = d.error || "FX fetch failed";
+    if (res) res.innerHTML = `<span style="color:var(--red)">✗ ${errMsg}</span>`;
+    if (inlineEl) inlineEl.innerHTML = `<span style="color:var(--red)">✗ ${errMsg}</span>`;
+    if (fxPanel) fxPanel.style.display = "none";
+    toast(errMsg, "error");
   }
 }
+
 
 /* ══════════════════════════════════════════════════════════════════════════
    SUBSCRIPTIONS

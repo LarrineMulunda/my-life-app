@@ -93,21 +93,36 @@ def _get_previous_prices(conn):
         """)
     else:
         cur.execute("""
-            SELECT ticker, exchange, price
-            FROM global_prices
-            WHERE (ticker, exchange, date) IN (
-                SELECT ticker, exchange, MAX(date)
+            SELECT gp.ticker, gp.exchange, gp.price
+            FROM global_prices gp
+            INNER JOIN (
+                SELECT ticker, exchange, MAX(date) as max_date
                 FROM global_prices GROUP BY ticker, exchange
-            )
+            ) latest ON gp.ticker=latest.ticker
+                AND gp.exchange=latest.exchange
+                AND gp.date=latest.max_date
         """)
-    return {(r[0], r[1]): float(r[2]) for r in cur.fetchall()}
+    result = {}
+    for r in cur.fetchall():
+        if is_pg():
+            result[(r["ticker"], r["exchange"])] = float(r["price"])
+        else:
+            result[(r[0], r[1])] = float(r[2])
+    return result
 
 
 def _get_previous_fx(conn):
     """Return {currency: kes_rate} from global_fx."""
+    from db import is_pg
     cur = conn.cursor()
     cur.execute("SELECT currency, kes_rate FROM global_fx")
-    return {r[0]: float(r[1]) for r in cur.fetchall()}
+    result = {}
+    for r in cur.fetchall():
+        if is_pg():
+            result[r["currency"]] = float(r["kes_rate"])
+        else:
+            result[r[0]] = float(r[1])
+    return result
 
 
 def _save_anomaly(conn, type_, ticker, exchange, currency,
@@ -258,10 +273,12 @@ def agent_check_anomalies(new_prices, previous_prices, tickers_meta, mode="stock
     flagged = []
 
     if mode == "stock":
-        ticker_to_exch = {t["ticker"]: t["exchange"] for t in tickers_meta}
+        # Build case-insensitive lookup: UPPER(ticker) -> exchange
+        ticker_to_exch = {t["ticker"].upper(): t["exchange"] for t in tickers_meta}
 
-        for ticker, price in new_prices.items():
-            exch = ticker_to_exch.get(ticker, "NSE")
+        for ticker_raw, price in new_prices.items():
+            ticker = ticker_raw.upper().strip()
+            exch   = ticker_to_exch.get(ticker, "NSE")
             prev = previous_prices.get((ticker, exch))
 
             if price <= 0:
@@ -302,8 +319,9 @@ def agent_check_anomalies(new_prices, previous_prices, tickers_meta, mode="stock
                 # 0–35% abs change (positive or negative) → write directly
                 clean[(ticker, exch)] = price
 
+        new_upper = {k.upper().strip() for k in new_prices.keys()}
         missing = [t["ticker"] for t in tickers_meta
-                   if t["ticker"] not in new_prices]
+                   if t["ticker"].upper() not in new_upper]
 
     else:  # FX mode — same single-threshold rule
         for currency, rate in new_prices.items():
@@ -496,11 +514,17 @@ def run_price_pipeline(api_key, tickers_meta, conn):
         return result
 
     # ── Write clean prices ────────────────────────────────────────────────────
-    ticker_cur_map = {t["ticker"]: t.get("currency","KES") for t in tickers_meta}
-    ticker_exch_map = {t["ticker"]: t["exchange"] for t in tickers_meta}
+    # Build both normal and uppercase maps for resilient lookup
+    ticker_cur_map  = {}
+    ticker_exch_map = {}
+    for t in tickers_meta:
+        ticker_cur_map[t["ticker"]]          = t.get("currency","KES")
+        ticker_cur_map[t["ticker"].upper()]  = t.get("currency","KES")
+        ticker_exch_map[t["ticker"]]         = t["exchange"]
+        ticker_exch_map[t["ticker"].upper()] = t["exchange"]
 
     for (ticker, exch), price in check["clean"].items():
-        cur = ticker_cur_map.get(ticker, "KES")
+        cur = ticker_cur_map.get(ticker) or ticker_cur_map.get(ticker.upper(), "KES")
         _upsert_global_price(conn, ticker, exch, price, cur, today)
         result["written"] += 1
 

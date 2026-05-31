@@ -54,11 +54,95 @@ def _to_kes(amount, currency, rates):
 
 
 # ══ SAVINGS GOAL PROGRESS ═════════════════════════════════════════════════════
-def _calc_progress(goal, contributions, fx_rates):
+def _get_linked_value(conn, link_type, link_label, user_id, fx_rates):
+    """
+    Get the current KES value of the linked source.
+    link_type: "savings_label" | "savings_class" | "stocks" | "stocks_ticker"
+    link_label: the label/class name or ticker symbol
+    Returns: (value_kes, display_label)
+    """
+    try:
+        if link_type == "savings_label":
+            rows = _fetchall(conn, f"""
+                SELECT amount, type, currency FROM savings
+                WHERE user_id={p()} AND label={p()}
+            """, (user_id, link_label))
+            val = sum(
+                _to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
+                if r["type"]=="deposit"
+                else -_to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
+                for r in rows)
+            return round(val, 2), f"Other Assets: {link_label}"
+
+        elif link_type == "savings_class":
+            rows = _fetchall(conn, f"""
+                SELECT amount, type, currency FROM savings
+                WHERE user_id={p()} AND asset_class={p()}
+            """, (user_id, link_label))
+            val = sum(
+                _to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
+                if r["type"]=="deposit"
+                else -_to_kes(float(r["amount"]), r.get("currency","KES"), fx_rates)
+                for r in rows)
+            return round(val, 2), f"Asset Class: {link_label}"
+
+        elif link_type == "stocks":
+            # Total portfolio stock market value
+            lots   = _fetchall(conn,
+                f"SELECT * FROM stock_lots WHERE user_id={p()} AND shares > 0", (user_id,))
+            prices = _fetchall(conn, "SELECT * FROM global_prices ORDER BY date DESC")
+            EXCUR  = {"NSE":"KES","NYSE":"USD","NASDAQ":"USD","LSE":"GBP",
+                      "JSE":"ZAR","EURONEXT":"EUR","HKEX":"HKD","CRYPTO":"USD"}
+            latest = {}
+            for pr in prices:
+                k = (pr["ticker"], pr.get("exchange","NSE"))
+                if k not in latest: latest[k] = float(pr["price"])
+            val = 0.0
+            for lot in lots:
+                exch = lot.get("exchange","NSE")
+                cur  = lot.get("currency") or EXCUR.get(exch,"KES")
+                price = latest.get((lot["ticker"], exch))
+                cost  = float(lot["shares"]) * float(lot["purchase_price"])
+                val  += _to_kes(float(lot["shares"]) * price if price else cost, cur, fx_rates)
+            return round(val, 2), "Stock Portfolio (market value)"
+
+        elif link_type == "stocks_ticker":
+            lots   = _fetchall(conn,
+                f"SELECT * FROM stock_lots WHERE user_id={p()} AND UPPER(ticker)={p()} AND shares > 0",
+                (user_id, link_label.upper()))
+            prices = _fetchall(conn,
+                f"SELECT * FROM global_prices WHERE UPPER(ticker)={p()} ORDER BY date DESC",
+                (link_label.upper(),))
+            EXCUR  = {"NSE":"KES","NYSE":"USD","NASDAQ":"USD","LSE":"GBP",
+                      "JSE":"ZAR","EURONEXT":"EUR","HKEX":"HKD","CRYPTO":"USD"}
+            latest_price = float(prices[0]["price"]) if prices else None
+            val = 0.0
+            for lot in lots:
+                exch = lot.get("exchange","NSE")
+                cur  = lot.get("currency") or EXCUR.get(exch,"KES")
+                cost = float(lot["shares"]) * float(lot["purchase_price"])
+                val += _to_kes(
+                    float(lot["shares"]) * latest_price if latest_price else cost,
+                    cur, fx_rates)
+            return round(val, 2), f"Stock: {link_label}"
+
+    except Exception as e:
+        pass
+    return None, None
+
+
+def _calc_progress(goal, contributions, fx_rates, auto_value_kes=None):
+    """
+    auto_value_kes: if goal is linked to savings label or stocks,
+    pass the current auto-read KES value here to override manual contributions.
+    """
     today      = date.today()
     created    = date.fromisoformat(str(goal["created_date"])[:10])
     target_kes = _to_kes(goal["target_amount"], goal["target_currency"], fx_rates)
-    saved_kes  = sum(_to_kes(c["amount"], c["currency"], fx_rates) for c in contributions)
+    if auto_value_kes is not None:
+        saved_kes = float(auto_value_kes)
+    else:
+        saved_kes = sum(_to_kes(c["amount"], c["currency"], fx_rates) for c in contributions)
     pct        = round(saved_kes / target_kes * 100, 1) if target_kes else 0
     remaining  = max(0.0, target_kes - saved_kes)
     months_el  = max(0.1, (today - created).days / 30.44)
@@ -448,7 +532,15 @@ def get_goals():
             contribs = _fetchall(conn,
                 f"SELECT * FROM goal_contributions WHERE goal_id={p()} ORDER BY date",(g["id"],))
             g["contributions"] = contribs
-            g["progress"]      = _calc_progress(g, contribs, fx)
+
+            # If linked to a source, compute auto_value_kes from it
+            g["auto_value_kes"] = None
+            g["auto_value_label"] = None
+            if g.get("link_type") and g.get("link_label"):
+                g["auto_value_kes"], g["auto_value_label"] = _get_linked_value(
+                    conn, g["link_type"], g["link_label"], uid(), fx)
+
+            g["progress"] = _calc_progress(g, contribs, fx, g["auto_value_kes"])
     finally:
         conn.close()
     return jsonify({"goals":goals,"categories":GOAL_CATEGORIES,"icons":GOAL_ICONS})
@@ -469,11 +561,12 @@ def add_goal():
         _exec(conn, f"""
             INSERT INTO goals
                 (user_id,name,icon,color,category,target_amount,target_currency,
-                 target_date,note,active,created_date)
-            VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
+                 target_date,note,active,created_date,link_type,link_label)
+            VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})
         """, (uid(),d["name"],d.get("icon","🎯"),d.get("color","#C9A84C"),
               d.get("category","General"),amt,d.get("target_currency","KES"),
-              d.get("target_date") or None,d.get("note",""),av,_today()))
+              d.get("target_date") or None,d.get("note",""),av,_today(),
+              d.get("link_type") or None, d.get("link_label") or None))
         conn.commit()
     finally:
         conn.close()
@@ -492,12 +585,14 @@ def edit_goal(gid):
         _exec(conn, f"""
             UPDATE goals
             SET name={p()},icon={p()},color={p()},category={p()},
-                target_amount={p()},target_currency={p()},target_date={p()},note={p()}
+                target_amount={p()},target_currency={p()},target_date={p()},
+                note={p()},link_type={p()},link_label={p()}
             WHERE id={p()} AND user_id={p()}
         """, (d["name"],d.get("icon","🎯"),d.get("color","#C9A84C"),
               d.get("category","General"),float(d["target_amount"]),
               d.get("target_currency","KES"),d.get("target_date") or None,
-              d.get("note",""),gid,uid()))
+              d.get("note",""),d.get("link_type") or None,
+              d.get("link_label") or None,gid,uid()))
         conn.commit()
     finally:
         conn.close()
@@ -590,4 +685,28 @@ def goal_insights():
         "total_target":round(t_t,2), "total_saved":round(t_s,2),
         "overall_pct": round(t_s/t_t*100,1) if t_t else 0,
         "per_goal":    all_p,
+    })
+
+
+@bp.route("/api/savings-labels")
+@approved_required
+def savings_labels():
+    """Return savings labels, asset classes, and stock tickers for goal linking."""
+    conn = get_db()
+    try:
+        labels = _fetchall(conn,
+            f"SELECT DISTINCT label, asset_class FROM savings WHERE user_id={p()} ORDER BY label",
+            (uid(),))
+        classes = _fetchall(conn,
+            f"SELECT DISTINCT asset_class FROM savings WHERE user_id={p()} ORDER BY asset_class",
+            (uid(),))
+        tickers = _fetchall(conn,
+            f"SELECT DISTINCT ticker, COALESCE(exchange,\'NSE\') as exchange FROM stock_lots WHERE user_id={p()} AND shares > 0 ORDER BY ticker",
+            (uid(),))
+    finally:
+        conn.close()
+    return jsonify({
+        "labels":  labels,
+        "classes": [r["asset_class"] for r in classes],
+        "tickers": tickers,
     })

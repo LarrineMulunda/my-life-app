@@ -146,21 +146,47 @@ def _portfolio_context(portfolio, savings):
 # ── Agent prompt builders ─────────────────────────────────────────────────────
 
 def _prompt_performance(ctx):
-    return f"""You are an expert portfolio performance analyst. Today is {datetime.today().strftime('%Y-%m-%d')}.
-Analyse the following Kenyan investor's portfolio and provide a data-driven performance summary.
+    today = datetime.today().strftime("%Y-%m-%d")
+    return f"""You are an expert portfolio performance analyst. Today is {today}.
+Analyse this Kenyan investor's portfolio and provide a comprehensive performance summary with health scoring.
 
 {ctx}
 
 Use Google Search to verify current prices and market context.
 
+Portfolio Health Score: Rate 0-100 based on:
+- Diversification (20pts): spread across sectors/geographies
+- Return quality (20pts): risk-adjusted returns
+- Momentum (20pts): recent price trends
+- Income (20pts): dividend yield and coverage
+- Risk (20pts): concentration risk, volatility
+
 Return ONLY valid JSON (no markdown, no code fences):
 {{
   "week_summary": "one punchy headline",
   "overall_rating": "STRONG|GOOD|NEUTRAL|CAUTION|REVIEW",
+  "health_score": 0,
+  "health_breakdown": {{
+    "diversification": 0,
+    "return_quality": 0,
+    "momentum": 0,
+    "income": 0,
+    "risk": 0
+  }},
+  "health_commentary": "2 sentence plain-English explanation of the score",
   "portfolio_health": "2-3 sentence overall assessment",
   "top_performers": [{{"ticker":"","exchange":"","return_pct":0,"note":""}}],
   "underperformers": [{{"ticker":"","exchange":"","return_pct":0,"note":""}}],
   "sector_breakdown": [{{"sector":"","allocation_pct":0,"comment":""}}],
+  "dividend_intelligence": {{
+    "annual_income_estimate_kes": 0,
+    "portfolio_yield_pct": 0,
+    "next_dividends": [
+      {{"ticker":"","exchange":"","ex_date":"YYYY-MM-DD","payment_date":"YYYY-MM-DD",
+        "estimated_amount":"","currency":"","yield_pct":0,"confidence":"HIGH|MEDIUM|LOW"}}
+    ],
+    "commentary": "1-2 sentences on income outlook"
+  }},
   "key_metrics": {{
     "total_return_pct": 0,
     "best_single_position": "",
@@ -197,29 +223,47 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 
 def _prompt_analyst(tickers_str):
-    return f"""You are a senior equity research analyst. Today is {datetime.today().strftime('%Y-%m-%d')}.
+    today = datetime.today().strftime("%Y-%m-%d")
+    return f"""You are a senior equity research analyst. Today is {today}.
 
 For the following stocks and ETFs: {tickers_str}
 
-Use Google Search to find the LATEST (within 30 days):
-1. Analyst consensus ratings and price targets
-2. Recent upgrades or downgrades
-3. Top 3 high-conviction stock ideas from major banks/analysts right now
-4. Any stocks on analyst "best ideas" or "top picks" lists
+Use Google Search to query MULTIPLE independent sources — include at least:
+Goldman Sachs, Morgan Stanley, JPMorgan, Bank of America, Citi, UBS, Barclays,
+and independent platforms like TipRanks, Seeking Alpha, MarketBeat, Zacks, Reuters.
+
+Find for each held ticker:
+1. Analyst consensus ratings from at least 3 different firms
+2. Price targets from different analysts (show the range, not just average)
+3. Recent upgrades or downgrades (last 30 days)
+
+ONLY include a ticker in analyst_views if it has BOTH a clear consensus AND a key thesis.
+ONLY include hot_picks that have a clear thesis — maximum 4 picks total from DIFFERENT sources.
 
 Return ONLY valid JSON (no markdown, no code fences):
 {{
   "analyst_views": [
-    {{"ticker":"","exchange":"","consensus":"BUY|HOLD|SELL|MIXED",
-      "avg_price_target":"","upside_pct":0,
-      "recent_changes":[{{"analyst":"","action":"UPGRADE|DOWNGRADE|INITIATE","date":"","target":""}}],
-      "key_thesis":""}}
+    {{
+      "ticker":"","exchange":"","consensus":"BUY|HOLD|SELL|MIXED",
+      "num_analysts":0,
+      "avg_price_target":"","target_range":"low-high",
+      "upside_pct":0,
+      "sources":["firm1","firm2","firm3"],
+      "recent_changes":[{{"analyst":"","firm":"","action":"UPGRADE|DOWNGRADE|INITIATE","date":"","target":""}}],
+      "key_thesis":"must be present - skip ticker if no clear thesis"
+    }}
   ],
   "hot_picks": [
-    {{"ticker":"","exchange":"","source":"","rating":"","price_target":"","thesis":"","catalyst":""}}
+    {{
+      "ticker":"","exchange":"","source":"name of analyst/publication",
+      "rating":"","price_target":"",
+      "thesis":"must be specific and detailed - omit if vague",
+      "catalyst":"near-term catalyst",
+      "alternative_view":"what bears say"
+    }}
   ],
-  "sector_sentiment": [{{"sector":"","sentiment":"BULLISH|NEUTRAL|BEARISH","note":""}}],
-  "market_context": "2-3 sentences on current market environment relevant to this portfolio"
+  "sector_sentiment": [{{"sector":"","sentiment":"BULLISH|NEUTRAL|BEARISH","note":"","sources":[""]}}],
+  "market_context": "2-3 sentences on current market relevant to this portfolio"
 }}"""
 
 
@@ -258,61 +302,101 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 
 def _prompt_corporate(tickers_str):
-    return f"""You are a corporate actions specialist. Today is {datetime.today().strftime('%Y-%m-%d')}.
+    today = datetime.today().strftime("%Y-%m-%d")
+    return f"""You are a corporate actions specialist. Today is {today}.
 
 For the following tickers: {tickers_str}
 
-Use Google Search to find ALL of the following within the next 60 days or recently announced:
-1. Dividend declarations, ex-dividend dates, payment dates
-2. Upcoming earnings dates
-3. Stock splits or consolidations
-4. Rights issues or new share offerings
-5. M&A activity, delistings, or major corporate announcements
+Use Google Search to find FUTURE events only (today or later — exclude past events):
+1. Upcoming ex-dividend dates and payment dates (FUTURE only, not past)
+2. Upcoming earnings release dates (FUTURE only)
+3. Announced stock splits or rights issues (FUTURE settlement dates)
+4. M&A activity, delistings, or major announcements with future effective dates
+5. NSE-specific: upcoming AGMs, dividend declarations, rights offers
+
+CRITICAL: Only include items with dates >= {today}. Remove any past events.
 
 Return ONLY valid JSON (no markdown, no code fences):
 {{
   "dividends": [
-    {{"ticker":"","exchange":"","declared_amount":"","currency":"","ex_date":"","payment_date":"","type":"interim|final|special","yield_pct":0}}
+    {{
+      "ticker":"","exchange":"","declared_amount":"","currency":"",
+      "ex_date":"YYYY-MM-DD — must be >= {today}",
+      "payment_date":"YYYY-MM-DD — must be >= {today}",
+      "type":"interim|final|special","yield_pct":0
+    }}
   ],
   "earnings": [
-    {{"ticker":"","exchange":"","expected_date":"","period":"","consensus_eps":"","note":""}}
+    {{
+      "ticker":"","exchange":"",
+      "expected_date":"YYYY-MM-DD — must be >= {today}",
+      "period":"","consensus_eps":"","note":""
+    }}
   ],
   "corporate_actions": [
-    {{"ticker":"","exchange":"","action_type":"split|rights|merger|delisting|other","details":"","date":"","impact":""}}
+    {{
+      "ticker":"","exchange":"","action_type":"split|rights|merger|delisting|other",
+      "details":"","date":"YYYY-MM-DD — must be >= {today}","impact":""
+    }}
   ],
   "nse_specific": [
-    {{"ticker":"","action":"","date":"","details":""}}
+    {{"ticker":"","action":"","date":"YYYY-MM-DD — must be >= {today}","details":""}}
   ],
-  "key_dates_next_30_days": [{{"date":"","ticker":"","event":"","importance":"HIGH|MEDIUM|LOW"}}]
+  "key_dates_next_30_days": [
+    {{"date":"YYYY-MM-DD","ticker":"","event":"","importance":"HIGH|MEDIUM|LOW"}}
+  ]
 }}"""
 
 
 def _prompt_verifier(agent_results):
+    today = datetime.today().strftime("%Y-%m-%d")
     results_str = json.dumps(agent_results, indent=2)
-    return f"""You are a meticulous fact-checker and investment compliance reviewer. Today is {datetime.today().strftime('%Y-%m-%d')}.
+    return f"""You are a meticulous fact-checker and investment compliance reviewer. Today is {today}.
 
-Review the following outputs from 5 portfolio analysis agents and verify their accuracy.
-Use Google Search to spot-check key claims: prices, dates, analyst ratings, corporate actions.
+Review the following outputs from 5 portfolio analysis agents and verify accuracy.
+Use Google Search to spot-check: prices, analyst ratings, dividend dates, corporate actions.
 
 AGENT OUTPUTS:
 {results_str}
 
 Check for:
-1. Factual errors (wrong prices, incorrect dates, made-up analyst ratings)
+1. Factual errors (wrong prices, incorrect dates, unverifiable analyst ratings)
 2. Contradictions between agents
-3. Outdated information presented as current
-4. Unrealistic projections or figures
+3. Past-dated corporate actions or dividends presented as future
+4. Low-confidence or vague claims
+
+CONFIDENCE RULES:
+- Only mark as VERIFIED if you can confirm the claim from at least one external source
+- Mark as NEEDS_REVISION if the claim is plausible but unconfirmed
+- Mark as INCORRECT if you find contradicting evidence
+- For each NEEDS_REVISION or INCORRECT item, provide specific feedback for that agent to fix it
 
 Return ONLY valid JSON (no markdown, no code fences):
 {{
   "overall_confidence": "HIGH|MEDIUM|LOW",
   "verified_items": [
-    {{"agent":"","claim":"","status":"VERIFIED|UNVERIFIED|INCORRECT","note":""}}
+    {{
+      "agent":"performance|rebalancing|analyst|thematic|corporate",
+      "claim":"specific claim being verified",
+      "status":"VERIFIED|NEEDS_REVISION|INCORRECT",
+      "confidence":"HIGH|MEDIUM|LOW",
+      "feedback":"specific correction or improvement needed (required for NEEDS_REVISION/INCORRECT)",
+      "source":"where you verified or refuted this"
+    }}
   ],
-  "corrections": [
-    {{"agent":"","field":"","original":"","corrected":"","source":""}}
-  ],
-  "flagged_risks": ["list anything that seems off or unverified"],
+  "agent_revisions_needed": {{
+    "performance":  {{"needs_revision": false, "items": [], "feedback": ""}},
+    "rebalancing":  {{"needs_revision": false, "items": [], "feedback": ""}},
+    "analyst":      {{"needs_revision": false, "items": [], "feedback": ""}},
+    "thematic":     {{"needs_revision": false, "items": [], "feedback": ""}},
+    "corporate":    {{"needs_revision": false, "items": [], "feedback": ""}}
+  }},
+  "high_confidence_only": {{
+    "analyst_views":   ["only tickers where analyst data is HIGH confidence"],
+    "dividends":       ["only future dividends with HIGH confidence dates"],
+    "corporate_actions":["only HIGH confidence future actions"],
+    "hot_picks":       ["only HIGH confidence picks with verified thesis"]
+  }},
   "reliability_scores": {{
     "performance": "HIGH|MEDIUM|LOW",
     "rebalancing": "HIGH|MEDIUM|LOW",
@@ -320,7 +404,7 @@ Return ONLY valid JSON (no markdown, no code fences):
     "thematic": "HIGH|MEDIUM|LOW",
     "corporate": "HIGH|MEDIUM|LOW"
   }},
-  "verifier_note": "2-3 sentence overall assessment of information quality"
+  "verifier_note": "2-3 sentence overall quality assessment"
 }}"""
 
 
@@ -423,6 +507,23 @@ def list_jobs(user_id, limit=10):
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
 
+def _make_revision_prompt(agent_id, original_result, feedback_str):
+    """Return a prompt function that asks an agent to revise its output."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    original_str = json.dumps(original_result, indent=2)
+
+    def prompt_fn():
+        return (
+            f"You are revising your previous analysis based on verifier feedback. Today is {today}.\n\n"
+            f"YOUR PREVIOUS OUTPUT:\n{original_str}\n\n"
+            f"VERIFIER FEEDBACK (items needing correction):\n{feedback_str}\n\n"
+            f"Use Google Search to verify and fix the flagged items.\n"
+            f"Return the COMPLETE corrected output in the same JSON format as before.\n"
+            f"Only fix what was flagged. Return ONLY valid JSON, no markdown."
+        )
+    return prompt_fn
+
+
 def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     """
     Run all 7 agents. Called in a background thread.
@@ -481,9 +582,59 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     }
     run_agent("verifier", _prompt_verifier, agent_results)
 
-    # ── Agent 7: Summary (waits for verifier) ────────────────────────────────
+    # ── Verifier: re-route agents needing revision ───────────────────────────
+    verifier_result = state["verifier"].get("result", {})
+    revisions = verifier_result.get("agent_revisions_needed", {})
+
+    for agent_id in ("performance","rebalancing","analyst","thematic","corporate"):
+        rev = revisions.get(agent_id, {})
+        if rev.get("needs_revision") and state[agent_id].get("status") == "done":
+            feedback = rev.get("feedback","")
+            items    = rev.get("items", [])
+            if feedback or items:
+                # Build a revised prompt incorporating verifier feedback
+                orig_result = json.dumps(state[agent_id].get("result", {}))
+                revision_prompt_map = {
+                    "performance": _prompt_performance,
+                    "rebalancing": _prompt_rebalancing,
+                    "analyst":     _prompt_analyst,
+                    "thematic":    _prompt_thematic,
+                    "corporate":   _prompt_corporate,
+                }
+                base_args = {
+                    "performance": (ctx,),
+                    "rebalancing": (ctx,),
+                    "analyst":     (tickers_str,),
+                    "thematic":    (ctx,),
+                    "corporate":   (tickers_str,),
+                }
+                # Create a revision prompt with feedback
+                original_prompt = revision_prompt_map[agent_id](*base_args[agent_id])
+                revision_prompt = (
+                    f"REVISION REQUEST — Your previous output needs correction.\n\n"
+                    f"VERIFIER FEEDBACK: {feedback}\n"
+                    f"SPECIFIC ISSUES: {json.dumps(items)}\n\n"
+                    f"YOUR PREVIOUS OUTPUT:\n{orig_result}\n\n"
+                    f"Please provide a corrected version.\n\n"
+                    + original_prompt
+                )
+                state[agent_id]["status"] = "revising"
+                _save_job(job_id, user_id, state)
+                try:
+                    text   = _call(api_key, revision_prompt, timeout=90)
+                    result = _extract_json(text)
+                    state[agent_id]["status"]   = "done"
+                    state[agent_id]["result"]   = result
+                    state[agent_id]["revised"]  = True
+                    agent_results[agent_id]     = result
+                except Exception as e:
+                    state[agent_id]["status"]         = "done"  # keep original on error
+                    state[agent_id]["revision_error"] = str(e)
+                _save_job(job_id, user_id, state)
+
+    # ── Agent 7: Summary (waits for verifier + any revisions) ────────────────
     run_agent("summary", _prompt_summary,
-              agent_results, state["verifier"].get("result", {}))
+              agent_results, verifier_result)
 
     # Mark job complete
     state["_finished_at"] = datetime.utcnow().isoformat()

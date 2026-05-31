@@ -104,7 +104,24 @@
         <label>Note <span style="color:var(--text3)">(optional)</span></label>
         <input type="text" id="g-note" placeholder="What is this goal for?"/>
       </div>
+      <!-- Link to savings label or portfolio -->
+      <div class="field">
+        <label>Link To <span style="color:var(--text3)">(auto-track balance)</span></label>
+        <select id="g-link-type" onchange="onGoalLinkChange()">
+          <option value="">Manual contributions only</option>
+          <option value="all_stocks">📈 All Stocks Portfolio</option>
+          <option value="savings_label">🏷 A savings label</option>
+        </select>
+      </div>
+      <div class="field" id="g-link-label-wrap" style="display:none">
+        <label>Savings Label</label>
+        <select id="g-link-label"><option value="">Loading…</option></select>
+      </div>
     </div>
+    <p class="panel-hint" style="margin-top:.5rem">
+      Linked goals auto-read their balance — no manual contributions needed.
+      Manual contributions still work as a fallback.
+    </p>
     <button class="btn btn-primary" onclick="addGoal()">Create Goal</button>
   </div>
 
@@ -142,6 +159,17 @@
       <div class="field"><label>Currency</label><select id="eg-currency">{% for cur in currencies %}<option value="{{ cur }}">{{ cur }}</option>{% endfor %}</select></div>
       <div class="field"><label>Target Date</label><input type="date" id="eg-date"/></div>
       <div class="field field-wide"><label>Note</label><input type="text" id="eg-note"/></div>
+      <div class="field field-wide" style="border-top:1px solid var(--border);padding-top:.7rem">
+        <label>Auto-Track From</label>
+        <select id="eg-link-type" onchange="loadEditLinkLabels()" style="margin-bottom:.4rem">
+          <option value="">— Manual only —</option>
+          <option value="stocks">Entire stock portfolio</option>
+          <option value="stocks_ticker">Specific stock ticker</option>
+          <option value="savings_label">Other Assets — label</option>
+          <option value="savings_class">Other Assets — class</option>
+        </select>
+        <select id="eg-link-label" style="display:none"><option value="">—</option></select>
+      </div>
     </div>
     <div style="display:flex;gap:.7rem;margin-top:1rem">
       <button class="btn btn-primary" onclick="saveGoalEdit()">Save</button>
@@ -489,6 +517,7 @@ function goalCard(g) {
         <div>
           <div class="goal-name">${g.name}</div>
           <div class="goal-meta">${g.category} · target ${cur} ${fmt(g.target_amount)}</div>
+          ${g.link_type ? `<div style="font-family:var(--font-mono);font-size:.6rem;color:var(--gold2);margin-top:.1rem">⚡ Auto-linked: ${g.link_source||g.link_type}</div>` : ""}
         </div>
       </div>
       <div class="goal-right">
@@ -502,7 +531,10 @@ function goalCard(g) {
         ${progressRing(p.pct_complete||0, g.color, 72)}
       </div>
       <div class="goal-stats">
-        <div class="goal-stat"><span class="gs-val" style="color:${g.color}">KES ${fmt(p.saved_kes)}</span><span class="gs-lbl">saved of KES ${fmt(p.target_kes)}</span></div>
+        <div class="goal-stat">
+          <span class="gs-val" style="color:${g.color}">KES ${fmt(p.saved_kes)}</span>
+          <span class="gs-lbl">${g.link_type ? "current value" : "saved"} of KES ${fmt(p.target_kes)}</span>
+        </div>
         <div class="goal-stat"><span class="gs-val">KES ${fmt(p.remaining_kes)}</span><span class="gs-lbl">remaining</span></div>
         <div class="goal-stat"><span class="gs-val">KES ${fmt(p.monthly_rate)}</span><span class="gs-lbl">avg/month</span></div>
         ${p.monthly_needed!=null?`<div class="goal-stat"><span class="gs-val" style="color:var(--gold2)">KES ${fmt(p.monthly_needed)}</span><span class="gs-lbl">needed/month</span></div>`:""}
@@ -537,27 +569,42 @@ async function addGoal() {
     target_amount: amt,
     target_currency: document.getElementById("g-currency").value,
     target_date: document.getElementById("g-date").value||null,
-    note: document.getElementById("g-note").value.trim(),
+    note:       document.getElementById("g-note").value.trim(),
+    link_type:  document.getElementById("g-link-type")?.value || null,
+    link_label: document.getElementById("g-link-label")?.value || null,
   });
   if (d.ok) { toast("Goal created ✓"); document.getElementById("g-name").value=""; document.getElementById("g-amount").value=""; loadGoals(); }
   else toast(d.error||"Error","error");
 }
 
 function openEditGoal(g) {
-  document.getElementById("eg-id").value       = g.id;
-  document.getElementById("eg-name").value     = g.name;
-  document.getElementById("eg-category").value = g.category;
-  document.getElementById("eg-icon").value     = g.icon;
-  document.getElementById("eg-color").value    = g.color;
-  document.getElementById("eg-amount").value   = g.target_amount;
-  document.getElementById("eg-currency").value = g.target_currency;
-  document.getElementById("eg-date").value     = g.target_date||"";
-  document.getElementById("eg-note").value     = g.note||"";
+  document.getElementById("eg-id").value        = g.id;
+  document.getElementById("eg-name").value      = g.name;
+  document.getElementById("eg-category").value  = g.category;
+  document.getElementById("eg-icon").value      = g.icon;
+  document.getElementById("eg-color").value     = g.color;
+  document.getElementById("eg-amount").value    = g.target_amount;
+  document.getElementById("eg-currency").value  = g.target_currency;
+  document.getElementById("eg-date").value      = g.target_date||"";
+  document.getElementById("eg-note").value      = g.note||"";
+  const egLt = document.getElementById("eg-link-type");
+  if (egLt) {
+    egLt.value = g.link_type||"";
+    if (g.link_type && g.link_type !== "stocks") {
+      loadEditLinkLabels().then(() => {
+        const egLl = document.getElementById("eg-link-label");
+        if (egLl && g.link_label) egLl.value = g.link_label;
+      });
+    }
+  }
   document.getElementById("edit-goal-modal").style.display="flex";
 }
 
 async function saveGoalEdit() {
-  const id = document.getElementById("eg-id").value;
+  const id      = document.getElementById("eg-id").value;
+  const linkType = document.getElementById("eg-link-type").value || null;
+  const linkLabel = linkType && linkType !== "stocks"
+    ? document.getElementById("eg-link-label").value || null : null;
   const d  = await api("PUT", `/api/goals/${id}`, {
     name: document.getElementById("eg-name").value.trim(),
     category: document.getElementById("eg-category").value,
@@ -567,6 +614,8 @@ async function saveGoalEdit() {
     target_currency: document.getElementById("eg-currency").value,
     target_date: document.getElementById("eg-date").value||null,
     note: document.getElementById("eg-note").value.trim(),
+    link_type:  linkType,
+    link_label: linkLabel,
   });
   if (d.ok) { closeModal("edit-goal-modal"); toast("Updated ✓"); loadGoals(); }
   else toast(d.error||"Error","error");
@@ -606,12 +655,34 @@ async function deleteContrib(gid, cid) {
   if (d.ok) { toast("Removed."); loadGoals(); }
 }
 
-// Init
+// ── Goal link type helpers ────────────────────────────────────────────────────
+async function onGoalLinkChange() {
+  const type = document.getElementById("g-link-type")?.value;
+  const wrap = document.getElementById("g-link-label-wrap");
+  const sel  = document.getElementById("g-link-label");
+  if (!wrap || !sel) return;
+  wrap.style.display = type === "savings_label" ? "block" : "none";
+  if (type === "savings_label") {
+    const d = await api("GET", "/api/goals/savings-labels");
+    sel.innerHTML = (d.labels||[]).map(l =>
+      `<option value="${l.label}">${l.label} (${l.asset_class})</option>`
+    ).join("") || `<option value="">No savings labels found</option>`;
+  }
+}
+
+// ── Init
 loadTargets();
 loadGoals();
 </script>
 
 <style>
+/* Health score bars */
+.hb-row { display:flex;align-items:center;gap:.6rem;margin-bottom:.3rem; }
+.hb-label { font-family:var(--font-mono);font-size:.65rem;color:var(--text3);width:110px;flex-shrink:0; }
+.hb-bar-wrap { flex:1;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden; }
+.hb-bar { height:100%;border-radius:3px; }
+.hb-val { font-family:var(--font-mono);font-size:.65rem;color:var(--text3);width:32px;text-align:right; }
+
 /* ── Tab switcher ──────────────────────────────────────────────────────────── */
 .goal-tab-pane { }
 
