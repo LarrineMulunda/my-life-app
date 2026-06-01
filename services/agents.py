@@ -1229,6 +1229,9 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             state[agent_id]["error"]  = str(e)
         state[agent_id]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
+        # Fire verifier immediately — overlaps with other agents still running
+        if agent_id in agent_verified_events:
+            _verify_and_revise(agent_id)
 
     # ── Batched dividend runner (handles 30+ tickers via chunking) ──────────
     BATCH_SIZE = 10  # Gemini handles ~10 tickers well per call
@@ -1322,6 +1325,7 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         }
         state["dividend"]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
+        _verify_and_revise("dividend")
 
     # ── Thematic: compute REAL exposure from held tickers before prompting ───
     # Maps tickers to theme categories so Gemini gets accurate starting data
@@ -1448,6 +1452,7 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             state["thematic"]["error"]  = str(e)
         state["thematic"]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
+        _verify_and_revise("thematic")
 
     # ── Agents 1-7 in parallel ────────────────────────────────────────────────
     # Analyst runs per-ticker in sub-threads (multithreaded)
@@ -1563,6 +1568,7 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             "market_context":  f"Multi-source analysis of {len(analyst_views)} holdings.",
         }
         _save_job(job_id, user_id, state)
+        _verify_and_revise("analyst")
 
     threads = [
         threading.Thread(target=run_agent,                 args=("performance", _prompt_performance, ctx)),
@@ -1581,135 +1587,18 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         aid: state[aid].get("result", {})
         for aid in ("performance","rebalancing","analyst","thematic","corporate","dividend","health")
     }
-    # ── Agent 8: Parallel sub-verifiers + meta-verifier ─────────────────────
-    state["verifier"]["status"] = "running"
-    state["verifier"]["pass"]   = 1
-    _save_job(job_id, user_id, state)
-
-    sub_results = {}
-    sub_lock    = threading.Lock()
-    sub_sem     = threading.Semaphore(6)  # max 6 concurrent
-
-    # Sub-verifier timeout: shorter than main agents since they verify, not research
-    SUB_TIMEOUT = 45  # seconds per sub-verifier call (paid Gemini is fast)
-
-    def _run_sub_verifier(aid):
-        # Semaphore acquired OUTSIDE try so it's always released even on timeout
-        acquired = sub_sem.acquire(timeout=10)  # don't wait forever for semaphore
-        if not acquired:
-            with sub_lock:
-                sub_results[aid] = {
-                    "agent": aid, "confidence": "MEDIUM",
-                    "needs_revision": False, "feedback": "semaphore timeout",
-                    "reliability_score": "MEDIUM", "issues": [],
-                }
-            return
-        try:
-            p = _prompt_sub_verifier(aid, agent_results.get(aid, {}))
-            t = _gemini(api_key, p, timeout=SUB_TIMEOUT, retries=1, use_search=False)  # no grounding — faster
-            r = _extract_json(t)
-            with sub_lock:
-                sub_results[aid] = r
-        except Exception as e:
-            with sub_lock:
-                sub_results[aid] = {
-                    "agent": aid, "confidence": "MEDIUM",
-                    "needs_revision": False, "feedback": str(e),
-                    "reliability_score": "MEDIUM", "issues": [],
-                }
-        finally:
-            sub_sem.release()  # always release, even on timeout/error
-
-    sub_threads = [
-        threading.Thread(target=_run_sub_verifier, args=(aid,), daemon=True)
-        for aid in ALL_REVISIONABLE
-    ]
-    for t in sub_threads: t.start()
-    # Wait at most SUB_TIMEOUT + 15s per thread for ALL to complete
-    deadline = SUB_TIMEOUT + 15
-    for t in sub_threads: t.join(timeout=deadline)
-    # Any thread still alive means it timed out — fill in default result
-    for t, aid in zip(sub_threads, ALL_REVISIONABLE):
-        if t.is_alive():
-            with sub_lock:
-                if aid not in sub_results:
-                    sub_results[aid] = {
-                        "agent": aid, "confidence": "MEDIUM",
-                        "needs_revision": False,
-                        "feedback": "sub-verifier timed out after deadline",
-                        "reliability_score": "MEDIUM", "issues": [],
-                    }
-
-    # Meta-verifier: cross-agent coherence
-    try:
-        meta_prompt  = _prompt_meta_verifier(agent_results, sub_results)
-        meta_text    = _gemini(api_key, meta_prompt, timeout=60, use_search=False)
-        meta_result  = _extract_json(meta_text)
-    except Exception as e:
-        meta_result = {
-            "overall_confidence": "MEDIUM",
-            "agent_revisions_needed": {
-                aid: {
-                    "needs_revision": sub_results.get(aid, {}).get("needs_revision", False),
-                    "items":    sub_results.get(aid, {}).get("issues", []),
-                    "feedback": sub_results.get(aid, {}).get("feedback", ""),
-                }
-                for aid in ALL_REVISIONABLE
-            },
-            "reliability_scores": {
-                aid: sub_results.get(aid, {}).get("reliability_score", "MEDIUM")
-                for aid in ALL_REVISIONABLE
-            },
-            "verifier_note": "Meta-verification failed (" + str(e) + "); sub-verifier results used.",
-            "coherence_score": 0,
-        }
-
-    # Merge sub results into meta
-    meta_result["sub_verifier_results"] = {
-        aid: {
-            "confidence":     sub_results.get(aid, {}).get("confidence", "MEDIUM"),
-            "issues":         (sub_results.get(aid, {}).get("issues") or [])[:3],
-            "needs_revision": sub_results.get(aid, {}).get("needs_revision", False),
-        }
-        for aid in ALL_REVISIONABLE
-    }
-    # Propagate sub-verifier revision flags not caught by meta
-    meta_rev = meta_result.get("agent_revisions_needed", {})
-    for aid in ALL_REVISIONABLE:
-        sr = sub_results.get(aid, {})
-        if sr.get("needs_revision") and not meta_rev.get(aid, {}).get("needs_revision"):
-            meta_rev.setdefault(aid, {})["needs_revision"] = True
-            meta_rev[aid]["feedback"] = (
-                meta_rev.get(aid, {}).get("feedback", "") + " " +
-                sr.get("feedback", "")
-            ).strip()
-            meta_rev[aid]["items"] = list({
-                *(meta_rev.get(aid, {}).get("items") or []),
-                *(sr.get("issues") or []),
-            })[:5]
-    meta_result["agent_revisions_needed"] = meta_rev
-
-    state["verifier"]["status"] = "done"
-    state["verifier"]["result"] = meta_result
-    _save_job(job_id, user_id, state)
-
-    # ── Verifier: resend flagged items to agents in PARALLEL threads ─────────
-    verifier_result = state["verifier"].get("result", {})
-    revisions       = verifier_result.get("agent_revisions_needed", {})
+    # ── Agent 8: Verifier — single fast pass, no search, 30s hard limit ────
 
     ALL_REVISIONABLE = (
         "performance", "rebalancing", "analyst",
         "thematic", "corporate", "dividend", "health",
     )
-    BASE_ARGS = {
-        "performance": lambda: (ctx,),
-        "rebalancing": lambda: (ctx,),
-        "analyst":     lambda: (tickers_str,),
-        "thematic":    lambda: (ctx,),
-        "corporate":   lambda: (tickers_str,),
-        "dividend":    lambda: (ctx, portfolio),
-        "health":      lambda: (ctx, portfolio),
-    }
+
+    # ── Per-agent verified events (set when agent + verifier + revision done) ─
+    agent_verified_events = {aid: threading.Event() for aid in ALL_REVISIONABLE}
+    agent_ver_lock        = threading.Lock()   # guard state["verifier"] writes
+    sub_verifier_results  = {}                 # aid → sub-verifier result
+
     PROMPT_MAP = {
         "performance": _prompt_performance,
         "rebalancing": _prompt_rebalancing,
@@ -1719,8 +1608,18 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         "health":      _prompt_health,
     }
 
+    BASE_ARGS = {
+        "performance": lambda: (ctx,),
+        "rebalancing": lambda: (ctx,),
+        "analyst":     lambda: (tickers_str,),
+        "thematic":    lambda: (ctx,),
+        "corporate":   lambda: (tickers_str,),
+        "dividend":    lambda: (ctx, portfolio),
+        "health":      lambda: (ctx, portfolio),
+    }
+
     def _revise_agent(agent_id, feedback, items):
-        """Revision worker - runs in its own thread, parallel to siblings."""
+        """Revision worker — runs in its own thread."""
         orig_result = json.dumps(state[agent_id].get("result", {}))
         orig_prompt = PROMPT_MAP.get(agent_id, lambda *a: "")(*BASE_ARGS.get(agent_id, lambda: ())())
         sep = chr(10)
@@ -1731,123 +1630,183 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             "SPECIFIC ISSUES: " + json.dumps(items),
             "",
             "YOUR PREVIOUS OUTPUT:",
-            orig_result,
+            orig_result[:4000],   # truncate to keep prompt small
             "",
-            "Provide a fully corrected version in the same JSON format as before.",
+            "Provide a fully corrected version in the same JSON format.",
             "",
-            orig_prompt,
+            orig_prompt[:3000],
         ])
         state[agent_id]["status"] = "revising"
         _save_job(job_id, user_id, state)
         try:
-            text   = _gemini(api_key, revision_txt, timeout=90)
+            text   = _gemini(api_key, revision_txt, timeout=60, retries=1)
             result = _extract_json(text)
             state[agent_id]["status"]  = "done"
             state[agent_id]["result"]  = result
             state[agent_id]["revised"] = True
             agent_results[agent_id]    = result
         except Exception as e:
-            state[agent_id]["status"]         = "done"   # keep original on error
+            state[agent_id]["status"]         = "done"
             state[agent_id]["revision_error"] = str(e)
         _save_job(job_id, user_id, state)
 
-    # ── Iterative verify → revise loop (max 3 retries per agent) ────────────
-    MAX_RETRIES  = 3
-    retry_counts = {aid: 0 for aid in ALL_REVISIONABLE}  # track per-agent retries
-    pass_number  = 1
-
-    # Start with first-pass verifier result
-    verifier_result = state["verifier"].get("result", {})
-    all_revised_aids = []
-
-    while True:
-        # Check which agents still need revision and haven't hit max retries
-        revisions = verifier_result.get("agent_revisions_needed", {})
-        to_revise = []
-        for aid in ALL_REVISIONABLE:
-            rev = revisions.get(aid, {})
-            if rev.get("needs_revision") and (rev.get("feedback") or rev.get("items")):
-                if retry_counts[aid] < MAX_RETRIES:
-                    to_revise.append((aid, rev.get("feedback",""), rev.get("items",[])))
-
-        if not to_revise:
-            break  # All agents pass or hit max retries
-
-        # Spawn parallel revision threads for all agents that need it this pass
-        rev_threads = []
-        for aid, feedback, items in to_revise:
-            retry_counts[aid] += 1
-            state[aid]["retry_count"] = retry_counts[aid]
-            t = threading.Thread(
-                target=_revise_agent,
-                args=(aid, feedback, items),
-                daemon=True,
-            )
-            rev_threads.append(t)
-            t.start()
-            all_revised_aids.append(aid)
-
-        for t in rev_threads:
-            t.join(timeout=120)
-
-        # Refresh agent_results with latest revisions
-        agent_results = {
-            aid: state[aid].get("result", {})
-            for aid in ALL_REVISIONABLE
-        }
-
-        # Run verifier again on revised outputs
-        pass_number += 1
-        state["verifier"]["status"] = "running"
-        state["verifier"]["pass"]   = pass_number
-        _save_job(job_id, user_id, state)
-
-        revised_this_pass = [aid for aid, _, _ in to_revise]
-        retry_note = (
-            "VERIFICATION PASS " + str(pass_number) + ". "
-            "Agents revised this pass: " + ", ".join(revised_this_pass) + ". "
-            "Retry counts: " + ", ".join(f"{a}={retry_counts[a]}" for a in revised_this_pass) + ". "
-            "Only flag agents still failing. Agents at max retries (" + str(MAX_RETRIES) + ") must be accepted as-is."
-        )
+    # ── _verify_and_revise: runs immediately when each agent completes ────────
+    def _verify_and_revise(aid):
+        """Verify one agent's output as soon as it finishes.
+        Fires in agent's own thread — overlaps with other agents still running.
+        Signals agent_verified_events[aid] when done (pass or revised).
+        """
         try:
-            v_prompt = _prompt_verifier(agent_results, note=retry_note)
-            v_text   = _gemini(api_key, v_prompt, timeout=90)
+            result = state[aid].get("result", {})
+            if not result:
+                # Agent errored — nothing to verify
+                sub_verifier_results[aid] = {
+                    "agent": aid, "confidence": "LOW",
+                    "needs_revision": False, "feedback": "agent had no output",
+                    "reliability_score": "LOW", "issues": [],
+                }
+                return
+
+            # Build slim prompt (no search — fast logical check only)
+            v_prompt = _prompt_sub_verifier(aid, result)
+            v_text   = _gemini(api_key, v_prompt, timeout=45, retries=1,
+                               use_search=False)
             v_result = _extract_json(v_text)
 
-            # Agents that hit max retries — force-clear needs_revision
-            needs_rev = v_result.get("agent_revisions_needed", {})
-            for aid in ALL_REVISIONABLE:
-                if retry_counts[aid] >= MAX_RETRIES and needs_rev.get(aid, {}).get("needs_revision"):
-                    needs_rev[aid]["needs_revision"] = False
-                    needs_rev[aid]["forced_accept"]  = True
-            v_result["agent_revisions_needed"] = needs_rev
+            with agent_ver_lock:
+                sub_verifier_results[aid] = v_result
 
-            first_result = state["verifier"].get("result", {})
-            state["verifier"]["result"] = {
-                **v_result,
-                "passes_completed":    pass_number,
-                "revised_agents":      list(set(all_revised_aids)),
-                "retry_counts":        {k:v for k,v in retry_counts.items() if v>0},
-                "forced_accepted":     [a for a in ALL_REVISIONABLE if retry_counts[a]>=MAX_RETRIES],
-                "first_pass_history":  first_result.get("agent_revisions_needed", {}),
-            }
-            state["verifier"]["status"] = "done"
-            verifier_result = state["verifier"]["result"]
+            # Revise until HIGH confidence or max 3 attempts
+            MAX_REVISIONS = 3
+            attempt = 0
+            current_result = v_result
+
+            while attempt < MAX_REVISIONS:
+                conf = current_result.get("confidence", "MEDIUM")
+                needs_rev = current_result.get("needs_revision", False)
+
+                # Stop if HIGH confidence — agent output is good
+                if conf == "HIGH" and not needs_rev:
+                    break
+
+                feedback = current_result.get("feedback", "")
+                items    = current_result.get("issues") or []
+
+                # Nothing actionable to fix — stop
+                if not feedback and not items:
+                    break
+
+                attempt += 1
+                state[aid]["retry_count"] = attempt
+                _revise_agent(aid, feedback, items)
+
+                # Re-verify the revised output
+                try:
+                    revised_result = state[aid].get("result", {})
+                    rv_prompt = _prompt_sub_verifier(
+                        aid, revised_result,
+                        note=f"RE-VERIFICATION attempt {attempt}/{MAX_REVISIONS}. "
+                             f"Agent was revised based on previous feedback. "
+                             f"Only flag if still not HIGH confidence."
+                    )
+                    rv_text   = _gemini(api_key, rv_prompt, timeout=45,
+                                        retries=1, use_search=False)
+                    current_result = _extract_json(rv_text)
+
+                    with agent_ver_lock:
+                        sub_verifier_results[aid] = current_result
+                except Exception:
+                    break  # Re-verify failed — keep last revision and move on
+
+            state[aid]["revision_attempts"] = attempt
+            if attempt > 0:
+                state[aid]["final_confidence"] = current_result.get("confidence", "MEDIUM")
+
         except Exception as e:
-            state["verifier"]["status"] = "done"
-            state["verifier"]["loop_error"] = str(e)
-            break
+            with agent_ver_lock:
+                sub_verifier_results[aid] = {
+                    "agent": aid, "confidence": "MEDIUM",
+                    "needs_revision": False, "feedback": str(e),
+                    "reliability_score": "MEDIUM", "issues": [],
+                }
+        finally:
+            agent_verified_events[aid].set()  # always signal, even on failure
 
-        _save_job(job_id, user_id, state)
+    # ────────────────────────────────────────────────────────────────────────
 
-    # Final agent_results for summary
+    # ── Wait for all 7 agents + their per-agent verifiers to complete ────────
+    # Each agent thread calls _verify_and_revise then sets its event.
+    # We wait here with a generous deadline — agents have 300s total.
+    _save_job(job_id, user_id, state)
+    AGENT_PIPELINE_TIMEOUT = 300  # 5 min max for all agents + their verifiers
+
+    for aid in ALL_REVISIONABLE:
+        signalled = agent_verified_events[aid].wait(timeout=AGENT_PIPELINE_TIMEOUT)
+        if not signalled:
+            # Agent timed out — fill a default sub-verifier result so coherence works
+            with agent_ver_lock:
+                if aid not in sub_verifier_results:
+                    sub_verifier_results[aid] = {
+                        "agent": aid, "confidence": "MEDIUM",
+                        "needs_revision": False, "feedback": "agent timed out",
+                        "reliability_score": "MEDIUM", "issues": [],
+                    }
+            # Also ensure event is set so future waits don't block
+            agent_verified_events[aid].set()
+
+    # ── Coherence check — runs after ALL agents verified (hard barrier) ────
+    # Checks cross-agent consistency only (no individual fact-checking)
+    # Fresh agent_results from state
     agent_results = {
         aid: state[aid].get("result", {})
         for aid in ALL_REVISIONABLE
     }
-    verifier_result = state["verifier"].get("result", {})
 
-    # ── Agent 9: Summary — uses latest agent data + verified findings ─────────
+    try:
+        coherence_prompt = _prompt_meta_verifier(agent_results, sub_verifier_results)
+        coherence_text   = _gemini(api_key, coherence_prompt, timeout=60,
+                                   retries=1, use_search=False)
+        v_result         = _extract_json(coherence_text)
+    except Exception as e:
+        # Coherence failed — build result from individual sub-verifier findings
+        v_result = {
+            "overall_confidence": "MEDIUM",
+            "coherence_score":     5,
+            "contradictions":      [],
+            "agent_revisions_needed": {
+                aid: {
+                    "needs_revision": sub_verifier_results.get(aid, {}).get("needs_revision", False),
+                    "items":    sub_verifier_results.get(aid, {}).get("issues", []),
+                    "feedback": sub_verifier_results.get(aid, {}).get("feedback", ""),
+                }
+                for aid in ALL_REVISIONABLE
+            },
+            "reliability_scores": {
+                aid: sub_verifier_results.get(aid, {}).get("reliability_score", "MEDIUM")
+                for aid in ALL_REVISIONABLE
+            },
+            "verifier_note": f"Coherence check failed ({e}); individual verifications used.",
+        }
+
+    # Merge sub-verifier detail into final result
+    v_result["sub_verifier_results"] = {
+        aid: {
+            "confidence":     sub_verifier_results.get(aid, {}).get("confidence", "MEDIUM"),
+            "issues":         (sub_verifier_results.get(aid, {}).get("issues") or [])[:2],
+            "needs_revision": sub_verifier_results.get(aid, {}).get("needs_revision", False),
+        }
+        for aid in ALL_REVISIONABLE
+    }
+    v_result["revised_agents"]   = [a for a in ALL_REVISIONABLE if state.get(a, {}).get("revised")]
+    v_result["passes_completed"] = 2 if v_result["revised_agents"] else 1
+
+    state["verifier"]["status"] = "done"
+    state["verifier"]["result"] = v_result
+    _save_job(job_id, user_id, state)
+
+    verifier_result = v_result
+
+        # ── Agent 9: Summary — uses latest agent data + verified findings ─────────
     run_agent("summary", _prompt_summary,
               agent_results, verifier_result)
 
