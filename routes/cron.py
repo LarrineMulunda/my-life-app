@@ -313,8 +313,9 @@ def _save_user_snapshot(user_id, fx_rates):
 @bp.route("/cron/friday", methods=["POST"])
 def cron_friday():
     """
-    Generate an AI portfolio review for every approved user.
-    Saves the review to each user's config under 'last_review'.
+    Run the full 9-agent AI portfolio review for every approved user.
+    Runs SYNCHRONOUSLY — keeps the HTTP connection open until all pipelines complete.
+    Cloud Run timeout is 600s which covers the ~5-8 min pipeline runtime.
     """
     if not _check_secret():
         return jsonify({"error": "Forbidden"}), 403
@@ -328,36 +329,49 @@ def cron_friday():
 
     conn = get_db()
     try:
-        users = _fetchall(conn, """
-            SELECT id, name FROM users WHERE role IN ('user','admin')
-        """)
+        users = _fetchall(conn,
+            "SELECT id, name FROM users WHERE role IN ('user','admin')")
     finally:
         conn.close()
 
     if not users:
         return jsonify({"message": "No approved users", **result})
 
-    for user in users:
-        uid = user["id"]
+    import threading, uuid
+
+    def run_for_user(user):
+        uid  = user["id"]
+        name = user["name"]
         try:
-            # Start agentic pipeline (runs in background thread, saves its own results)
             portfolio = _build_user_portfolio(uid)
             sav       = _get_user_savings(uid)
-            job_id    = _agents.start_pipeline(uid, api_key, portfolio, sav)
-            result["reviews"].append({
-                "user_id": uid, "name": user["name"],
-                "ok": True, "job_id": job_id
-            })
-            print(f"[cron/friday] Pipeline started for user {uid} ({user['name']}) job={job_id}", flush=True)
+            job_id    = str(uuid.uuid4())
+
+            print(f"[cron/friday] Starting 9-agent pipeline for {name} (job {job_id})", flush=True)
+
+            # Run pipeline SYNCHRONOUSLY — blocks until all 9 agents complete
+            _agents.run_pipeline(job_id, uid, api_key, portfolio, sav)
+
+            print(f"[cron/friday] Pipeline complete for {name}", flush=True)
+            return {"user_id": uid, "name": name, "ok": True, "job_id": job_id}
         except Exception as e:
-            msg = f"User {uid} ({user['name']}): {e}"
-            result["errors"].append(msg)
-            print(f"[cron/friday] Error — {msg}", flush=True)
+            msg = f"User {uid} ({name}): {e}"
+            print(f"[cron/friday] ERROR — {msg}", flush=True)
+            return {"user_id": uid, "name": name, "ok": False, "error": str(e)}
+
+    # Run pipelines for all users sequentially (one user = one person anyway)
+    for user in users:
+        res = run_for_user(user)
+        if res["ok"]:
+            result["reviews"].append(res)
+        else:
+            result["errors"].append(res["error"])
 
     result["message"] = (
-        f"Reviews generated for {len(result['reviews'])} user(s)"
+        f"9-agent review complete for {len(result['reviews'])} user(s)"
         + (f", {len(result['errors'])} error(s)" if result["errors"] else "")
     )
+    print(f"[cron/friday] Done — {result['message']}", flush=True)
     return jsonify(result)
 
 
@@ -451,73 +465,3 @@ def _get_user_savings(user_id):
             "note":        r.get("note","") or "",
         })
     return {"totals": sav_totals, "entries": sav_entries}
-
-def _generate_user_review(user_id, api_key):
-    """Build portfolio context and call Gemini review for one user."""
-    conn = get_db()
-    try:
-        lots    = _fetchall(conn,
-            f"SELECT * FROM stock_lots WHERE user_id={ph()} AND shares > 0", (user_id,))
-        prices  = _fetchall(conn, "SELECT * FROM global_prices ORDER BY date DESC")
-        sales   = _fetchall(conn,
-            f"SELECT * FROM stock_sales WHERE user_id={ph()}", (user_id,))
-        savings = _fetchall(conn,
-            f"""SELECT asset_class,
-                    SUM(CASE WHEN type='deposit' THEN amount ELSE -amount END) as v
-                FROM savings WHERE user_id={ph()}
-                GROUP BY asset_class""", (user_id,))
-    finally:
-        conn.close()
-
-    fx_rates = fx_get_all()
-
-    def to_kes(amount, cur):
-        return float(amount) * fx_rates.get(cur or "KES", 1.0)
-
-    latest = {}
-    for p in prices:
-        k = (p["ticker"], p.get("exchange","NSE"))
-        if k not in latest:
-            latest[k] = float(p["price"])
-
-    tickers = {}
-    for lot in lots:
-        exch = lot.get("exchange","NSE")
-        cur  = lot.get("currency") or EXCUR.get(exch,"KES")
-        k    = (lot["ticker"], exch)
-        if k not in tickers:
-            tickers[k] = {"ticker":lot["ticker"],"exchange":exch,"currency":cur,
-                          "total_shares":0,"total_cost":0}
-        tickers[k]["total_shares"] += float(lot["shares"])
-        tickers[k]["total_cost"]   += float(lot["shares"]) * float(lot["purchase_price"])
-
-    holdings = []
-    total_cost = total_market = 0
-    for k, h in tickers.items():
-        h["avg_cost"]    = round(h["total_cost"]/h["total_shares"],4) if h["total_shares"] else 0
-        price = latest.get(k)
-        if price:
-            mkt = h["total_shares"] * price
-            h["market_price"] = price
-            h["pct_return"]   = round((mkt - h["total_cost"])/h["total_cost"]*100,2) if h["total_cost"] else 0
-            total_market += to_kes(mkt, h["currency"])
-        else:
-            h["market_price"] = None
-            h["pct_return"]   = None
-        total_cost += to_kes(h["total_cost"], h["currency"])
-        holdings.append(h)
-
-    sav = {r["asset_class"]: float(r["v"]) for r in savings if r.get("v")}
-    realized = sum(
-        (float(s["sale_price"]) - float(s["purchase_price"])) * float(s["shares"])
-        for s in sales)
-
-    portfolio = {
-        "holdings":       holdings,
-        "total_cost":     round(total_cost, 2),
-        "total_market":   round(total_market, 2),
-        "total_gain":     round(total_market - total_cost, 2),
-        "portfolio_pct":  round((total_market-total_cost)/total_cost*100,2) if total_cost else 0,
-        "total_realized": round(realized, 2),
-    }
-    return generate_review(api_key, portfolio, sav)
