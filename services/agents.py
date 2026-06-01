@@ -1570,25 +1570,6 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         _save_job(job_id, user_id, state)
         _verify_and_revise("analyst")
 
-    threads = [
-        threading.Thread(target=run_agent,                 args=("performance", _prompt_performance, ctx)),
-        threading.Thread(target=run_agent,                 args=("rebalancing", _prompt_rebalancing, ctx)),
-        threading.Thread(target=run_analyst_multithreaded, args=()),
-        threading.Thread(target=_run_thematic_with_exposure, args=()),
-        threading.Thread(target=run_agent,                 args=("corporate",   _prompt_corporate, tickers_str)),
-        threading.Thread(target=_run_dividend_batched,      args=()),
-        threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio, savings)),
-    ]
-    for t in threads: t.daemon = True; t.start()
-    for t in threads: t.join(timeout=150)
-
-    # ── Agent 6: Verifier (waits for 1-5) ────────────────────────────────────
-    agent_results = {
-        aid: state[aid].get("result", {})
-        for aid in ("performance","rebalancing","analyst","thematic","corporate","dividend","health")
-    }
-    # ── Agent 8: Verifier — single fast pass, no search, 30s hard limit ────
-
     ALL_REVISIONABLE = (
         "performance", "rebalancing", "analyst",
         "thematic", "corporate", "dividend", "health",
@@ -1731,6 +1712,26 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                 }
         finally:
             agent_verified_events[aid].set()  # always signal, even on failure
+
+
+    threads = [
+        threading.Thread(target=run_agent,                 args=("performance", _prompt_performance, ctx)),
+        threading.Thread(target=run_agent,                 args=("rebalancing", _prompt_rebalancing, ctx)),
+        threading.Thread(target=run_analyst_multithreaded, args=()),
+        threading.Thread(target=_run_thematic_with_exposure, args=()),
+        threading.Thread(target=run_agent,                 args=("corporate",   _prompt_corporate, tickers_str)),
+        threading.Thread(target=_run_dividend_batched,      args=()),
+        threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio, savings)),
+    ]
+    for t in threads: t.daemon = True; t.start()
+    for t in threads: t.join(timeout=150)
+
+    # ── Agent 6: Verifier (waits for 1-5) ────────────────────────────────────
+    agent_results = {
+        aid: state[aid].get("result", {})
+        for aid in ("performance","rebalancing","analyst","thematic","corporate","dividend","health")
+    }
+    # ── Agent 8: Verifier — single fast pass, no search, 30s hard limit ────
 
     # ────────────────────────────────────────────────────────────────────────
 
