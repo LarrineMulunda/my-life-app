@@ -90,9 +90,12 @@ def _to_kes(amount, currency, rates):
 @bp.route("/api/savings/exchange", methods=["POST"])
 @approved_required
 def exchange_assets():
-    """Record a conversion between two asset classes.
-    Creates a withdrawal from the source and a deposit to the destination.
-    For stock→asset: records a sale entry + savings deposit.
+    """Record a partial or full conversion between asset classes.
+
+    Stocks: sell N shares from a lot (partial or full).
+      - Partial: reduces lot shares, records sale for N shares only.
+      - Full:    zeroes lot, records sale for all shares.
+    Savings: withdraw amount from label (partial always — just a new entry).
     """
     d = request.json or {}
     try:
@@ -100,59 +103,107 @@ def exchange_assets():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    from_type  = d["from_type"]   # "savings" or "stocks"
-    to_type    = d["to_type"]     # "savings" or "stocks"
-    amount     = float(d["amount"])
-    date       = d["date"]
-    currency   = d.get("currency","KES")
-    note       = d.get("note","") or f"Exchange on {date}"
+    from_type   = d["from_type"]
+    to_type     = d["to_type"]
+    amount      = float(d["amount"])
+    date        = d["date"]
+    currency    = d.get("currency", "KES")
+    note        = d.get("note", "") or f"Exchange on {date}"
 
-    # Source details
-    from_class = d.get("from_class","")   # asset class if savings
-    from_label = d.get("from_label","")   # label if savings
-    from_lot   = d.get("from_lot_id")     # lot id if stocks
+    from_class  = d.get("from_class", "")
+    from_label  = d.get("from_label", "")
+    from_lot_id = d.get("from_lot_id")
+    from_shares = d.get("from_shares")   # None = sell all; number = partial
 
-    # Destination details
-    to_class   = d.get("to_class","")
-    to_label   = d.get("to_label","")
-    to_ticker  = d.get("to_ticker","")
-    to_exchange= d.get("to_exchange","")
+    to_class    = d.get("to_class", "")
+    to_label    = d.get("to_label", "")
+    to_ticker   = d.get("to_ticker", "")
+    to_exchange = d.get("to_exchange", "")
 
     conn = get_db()
     try:
-        fx_rates = _get_fx_rates(conn)
+        fx_rates     = _get_fx_rates(conn)
         rows_created = []
+        source_desc  = ""
 
-        # ── Debit the source ─────────────────────────────────────────────────
+        # ── Debit the source ──────────────────────────────────────────────────
         if from_type == "savings":
+            # Validate: check available balance for this label
+            bal_rows = _fetchall(conn, f"""
+                SELECT SUM(CASE WHEN type IN ('deposit','interest') THEN amount
+                               ELSE -amount END) as bal
+                FROM savings
+                WHERE user_id={p()} AND label={p()}
+            """, (uid(), from_label or from_class))
+            bal = float((bal_rows[0]["bal"] or 0) if bal_rows else 0)
+            fx  = fx_rates.get(currency, 1.0)
+            amount_kes = amount * fx
+            if bal > 0 and amount_kes > bal * 1.01:  # 1% tolerance for rounding
+                conn.rollback()
+                return jsonify({"error": f"Insufficient balance. Available: KES {bal:,.2f}"}), 400
+
             _exec(conn, f"""INSERT INTO savings
                 (user_id, label, asset_class, amount, type, currency, date, note)
                 VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
                 (uid(), from_label or from_class, from_class, amount,
                  "withdrawal", currency, date,
                  f"→ Exchange to {to_class or to_ticker}: {note}"))
-            rows_created.append(f"Withdrew {currency} {amount:,.2f} from {from_label or from_class}")
+            source_desc = from_label or from_class
+            rows_created.append(
+                f"Withdrew {currency} {amount:,.2f} from {source_desc}"
+                + (f" (remaining balance: KES {max(0, bal - amount_kes):,.2f})" if bal else "")
+            )
 
-        elif from_type == "stocks" and from_lot:
-            # Record a sale for the lot
+        elif from_type == "stocks" and from_lot_id:
             lot = _fetchone(conn,
                 f"SELECT * FROM stock_lots WHERE id={p()} AND user_id={p()}",
-                (from_lot, uid()))
+                (from_lot_id, uid()))
             if not lot:
                 conn.rollback()
                 return jsonify({"error": "Lot not found"}), 404
-            sale_price = amount / float(lot["shares"]) if lot["shares"] else 0
+
+            lot_shares   = float(lot["shares"])
+            lot_currency = lot.get("currency") or "KES"
+
+            # Determine shares to sell
+            if from_shares is not None:
+                sell_shares = float(from_shares)
+                if sell_shares <= 0:
+                    conn.rollback()
+                    return jsonify({"error": "Shares to sell must be > 0"}), 400
+                if sell_shares > lot_shares + 0.000001:
+                    conn.rollback()
+                    return jsonify({
+                        "error": f"Cannot sell {sell_shares:,.4f} shares — only {lot_shares:,.4f} in this lot"
+                    }), 400
+                sell_shares = min(sell_shares, lot_shares)
+            else:
+                sell_shares = lot_shares   # sell all
+
+            is_partial  = sell_shares < lot_shares - 0.000001
+            sale_price  = amount / sell_shares if sell_shares else 0
+            rem_shares  = round(lot_shares - sell_shares, 6)
+
+            # Record the sale
             _exec(conn, f"""INSERT INTO stock_sales
                 (user_id, lot_id, ticker, exchange, shares, purchase_price,
                  sale_price, date, note)
                 VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
-                (uid(), from_lot, lot["ticker"], lot.get("exchange","NSE"),
-                 lot["shares"], lot["purchase_price"], sale_price, date,
-                 f"Exchange → {to_label or to_class or to_ticker}"))
-            # Zero out the lot
-            _exec(conn, f"UPDATE stock_lots SET shares=0 WHERE id={p()} AND user_id={p()}",
-                  (from_lot, uid()))
-            rows_created.append(f"Sold {lot['ticker']} ({lot['exchange']}) lot → {currency} {amount:,.2f}")
+                (uid(), from_lot_id, lot["ticker"], lot.get("exchange","NSE"),
+                 sell_shares, lot["purchase_price"], sale_price, date,
+                 f"{'Partial ' if is_partial else ''}Exchange → {to_label or to_class or to_ticker}"))
+
+            # Update lot: reduce shares (or zero out if full sale)
+            _exec(conn,
+                f"UPDATE stock_lots SET shares={p()} WHERE id={p()} AND user_id={p()}",
+                (rem_shares, from_lot_id, uid()))
+
+            source_desc = f"{lot['ticker']} ({lot.get('exchange','NSE')})"
+            rows_created.append(
+                f"Sold {sell_shares:,.4f} of {lot_shares:,.4f} shares of {source_desc}"
+                f" @ {lot_currency} {sale_price:.4f} → {currency} {amount:,.2f}"
+                + (f" · {rem_shares:,.4f} shares remaining" if is_partial else " · lot closed")
+            )
 
         # ── Credit the destination ────────────────────────────────────────────
         if to_type == "savings":
@@ -161,20 +212,20 @@ def exchange_assets():
                 VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
                 (uid(), to_label or to_class, to_class, amount,
                  "deposit", currency, date,
-                 f"← Exchange from {from_class or from_label}: {note}"))
+                 f"← Exchange from {source_desc or from_class}: {note}"))
             rows_created.append(f"Deposited {currency} {amount:,.2f} into {to_label or to_class}")
 
         elif to_type == "stocks" and to_ticker:
-            shares  = float(d.get("to_shares", 0))
-            price   = amount / shares if shares else 0
+            to_shares = float(d.get("to_shares") or 0)
+            price     = amount / to_shares if to_shares else 0
             _exec(conn, f"""INSERT INTO stock_lots
                 (user_id, ticker, exchange, shares, purchase_price,
                  currency, date, note)
                 VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
-                (uid(), to_ticker.upper(), to_exchange or "NSE", shares,
+                (uid(), to_ticker.upper(), to_exchange or "NSE", to_shares,
                  price, currency, date,
-                 f"← Exchange from {from_class or from_label}"))
-            rows_created.append(f"Bought {shares} {to_ticker} @ {price:.4f}")
+                 f"← Exchange from {source_desc or from_class}"))
+            rows_created.append(f"Bought {to_shares:,.4f} {to_ticker} @ {currency} {price:.4f}")
 
         conn.commit()
         return jsonify({"ok": True, "actions": rows_created})

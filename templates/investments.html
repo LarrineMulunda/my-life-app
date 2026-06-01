@@ -347,6 +347,140 @@
     <div class="kpi-card"><div class="kpi-label">Other Assets Net</div><div class="kpi-val" id="stat-net">—</div></div>
   </div>
   <div class="asset-summary" id="asset-summary"></div>
+
+  <!-- ⇄ Exchange / Convert between asset classes -->
+  <div class="panel" id="exchange-panel" style="margin-top:1rem">
+    <div class="panel-title" style="cursor:pointer;user-select:none" onclick="toggleExchange()">
+      <span>⇄ Convert / Exchange Assets</span>
+      <span id="exchange-chevron" style="margin-left:auto;font-size:.75rem;color:var(--text3)">▼</span>
+    </div>
+    <div id="exchange-form" style="display:none;margin-top:.8rem">
+      <p style="font-size:.82rem;color:var(--text3);margin-bottom:1rem">
+        Record a conversion between asset classes — e.g. withdraw MMF to fund farming, sell a stock lot to cash, move SACCO proceeds to bonds.
+      </p>
+      <div class="form-grid">
+        <div class="field">
+          <label>From</label>
+          <select id="ex-from-type" onchange="onExchangeFromChange()">
+            <option value="savings">Other Asset (savings)</option>
+            <option value="stocks">Stock / ETF lot (sell all)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>To</label>
+          <select id="ex-to-type" onchange="onExchangeToChange()">
+            <option value="savings">Other Asset (savings)</option>
+            <option value="stocks">Stock / New Ticker (buy)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- From: savings fields -->
+      <div id="ex-from-savings" style="margin-top:.4rem">
+        <div class="form-grid">
+          <div class="field">
+            <label>Source Asset Class</label>
+            <select id="ex-from-class" onchange="onExchangeSavingsChange()">
+              {% for ac in asset_classes %}<option>{{ ac }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label>Source Label <span style="font-size:.65rem;color:var(--text3)">(type or pick)</span></label>
+            <input id="ex-from-label" type="text" placeholder="e.g. CIC MMF"
+                   oninput="onExchangeSavingsChange()" list="ex-label-list"/>
+            <datalist id="ex-label-list"></datalist>
+          </div>
+        </div>
+        <div id="ex-savings-balance" style="font-size:.75rem;color:var(--text3);margin-top:.3rem;font-family:var(--font-mono)"></div>
+      </div>
+
+      <!-- From: stock lot -->
+      <div id="ex-from-stocks" style="display:none;margin-top:.4rem">
+        <div class="form-grid">
+          <div class="field">
+            <label>Stock Lot</label>
+            <select id="ex-from-lot" onchange="onExchangeLotChange()">
+              <option value="">Loading lots…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>
+              Shares to Sell
+              <span id="ex-lot-available" style="font-size:.65rem;color:var(--text3);margin-left:.4rem"></span>
+            </label>
+            <div style="display:flex;gap:.4rem;align-items:center">
+              <input id="ex-from-shares" type="number" min="0.0001" step="any"
+                     placeholder="Shares" oninput="onExchangeSharesInput()" style="flex:1"/>
+              <button type="button" class="btn btn-ghost btn-sm"
+                      onclick="sellAllShares()" style="white-space:nowrap;padding:.35rem .6rem">
+                All
+              </button>
+            </div>
+          </div>
+        </div>
+        <div id="ex-proceeds-hint" style="font-size:.75rem;color:var(--text3);margin-top:.3rem;font-family:var(--font-mono)"></div>
+      </div>
+
+      <!-- To: savings fields -->
+      <div id="ex-to-savings" class="form-grid" style="margin-top:.4rem">
+        <div class="field">
+          <label>Destination Asset Class</label>
+          <select id="ex-to-class">
+            {% for ac in asset_classes %}<option>{{ ac }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label>Destination Label</label>
+          <input id="ex-to-label" type="text" placeholder="e.g. Chicken Farm"/>
+        </div>
+      </div>
+
+      <!-- To: stock fields -->
+      <div id="ex-to-stocks" style="display:none;margin-top:.4rem">
+        <div class="form-grid">
+          <div class="field">
+            <label>Ticker</label>
+            <input id="ex-to-ticker" type="text" placeholder="e.g. SCOM" style="text-transform:uppercase"/>
+          </div>
+          <div class="field">
+            <label>Exchange</label>
+            <select id="ex-to-exchange">
+              {% for exch in exchanges %}<option>{{ exch }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label>Shares Bought</label>
+            <input id="ex-to-shares" type="number" min="0.0001" step="any" placeholder="0"/>
+          </div>
+        </div>
+      </div>
+
+      <!-- Common fields -->
+      <div class="form-grid" style="margin-top:.4rem">
+        <div class="field">
+          <label>Amount</label>
+          <input id="ex-amount" type="number" min="0" step="0.01" placeholder="0.00"/>
+        </div>
+        <div class="field">
+          <label>Currency</label>
+          <select id="ex-currency">
+            <option>KES</option><option>USD</option><option>GBP</option><option>EUR</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Date</label>
+          <input id="ex-date" type="date"/>
+        </div>
+        <div class="field">
+          <label>Note</label>
+          <input id="ex-note" type="text" placeholder="Optional note"/>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" style="margin-top:.8rem" onclick="recordExchange()">⇄ Record Exchange</button>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="panel-title">Add Entry</div>
     <div class="form-grid">

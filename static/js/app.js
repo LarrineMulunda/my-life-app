@@ -1252,521 +1252,500 @@ function renderAgenticReview(agents, summary) {
 
 function _renderAgenticReviewInner(agents, summary, wrap) {
 
-  // If summary is completely empty, show a partial-results message
-  if (!summary || (!summary.headline && !summary.executive_summary && !summary.overall_rating)) {
-    // Try to render whatever agent data we DO have
-    const perf = agents.performance?.result || {};
-    const reb  = agents.rebalancing?.result || {};
-    if (!perf.performance_commentary && !reb.rebalancing_summary) {
-      wrap.innerHTML = `<div class="panel" style="text-align:center;padding:2rem">
-        <p style="color:var(--red);font-family:var(--font-mono);font-size:.82rem">
-          ⚠ Review completed but the Executive Summary returned no data.<br>
-          This usually means Gemini hit a rate limit on the final agent.
-        </p>
-        <p style="color:var(--text3);font-size:.78rem;margin-top:.5rem">
-          Individual agent data may still be available — try re-running the review.
-        </p>
-        <button class="btn btn-primary" style="margin-top:1rem" onclick="startAgenticReview()">↻ Re-run Review</button>
-      </div>`;
-      // But still try to render partial agent sections below
-    }
-  }
+  /* ── Declare all 9 agent result objects ────────────────────────────────── */
+  const perf     = agents.performance?.result || {};
+  const reb      = agents.rebalancing?.result || {};
+  const analyst  = agents.analyst?.result     || {};
+  const thematic = agents.thematic?.result    || {};
+  const corp     = agents.corporate?.result   || {};
+  const dividend = agents.dividend?.result    || {};
+  const health   = agents.health?.result      || {};
+  const verifier = agents.verifier?.result    || {};
+  // summary already passed as param
 
-  const date = new Date().toLocaleDateString("en-KE",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+  const RISK_C = {CONSERVATIVE:"var(--green)",MODERATE:"var(--gold)",AGGRESSIVE:"var(--red)"};
+  const ICONS  = {"Growth Investor":"🚀","Income Investor":"💰","Value Investor":"🔍",
+    "Balanced Investor":"⚖️","Speculative Trader":"⚡","Africa-Focused Investor":"🌍",
+    "Conservative Saver":"🛡️","Thematic Investor":"🌐"};
 
-  // Rating colour
-  const RATING_COLOR = {STRONG:"var(--green)",GOOD:"var(--green)",NEUTRAL:"var(--gold2)",CAUTION:"var(--gold)",REVIEW:"var(--red)"};
-  const ratingColor  = RATING_COLOR[summary.overall_rating] || "var(--gold2)";
+  const today    = new Date().toISOString().split("T")[0];
+  const isFuture = d => !d || d >= today;
+  const date     = new Date().toLocaleDateString("en-KE",
+    {weekday:"long",year:"numeric",month:"long",day:"numeric"});
 
-  // Top actions
+  const RATING_C = {STRONG:"var(--green)",GOOD:"var(--green)",
+    NEUTRAL:"var(--gold2)",CAUTION:"var(--gold)",REVIEW:"var(--red)"};
+  const ratingColor = RATING_C[summary.overall_rating] || "var(--gold2)";
+
+  /* ── Verifier confidence filter ────────────────────────────────────────── */
+  const hcTickers = new Set(
+    (verifier.high_confidence_only?.analyst_views||[]).map(t=>t.toUpperCase()));
+
+  /* ── Filtered data ─────────────────────────────────────────────────────── */
+  const filteredViews = (analyst.analyst_views||[])
+    .filter(a => a.key_thesis && a.key_thesis.length > 10
+      && (hcTickers.size===0 || hcTickers.has(a.ticker?.toUpperCase())));
+  const filteredPicks = (analyst.hot_picks||[])
+    .filter(p => p.thesis && p.thesis.length > 10).slice(0,4);
+  const filteredDivs  = (corp.dividends||[])
+    .filter(d => isFuture(d.ex_date)||isFuture(d.payment_date));
+  const filteredCorp  = (corp.corporate_actions||[]).filter(a => isFuture(a.date));
+  const badges        = (health.portfolio_badges||summary.portfolio_badges||[])
+    .filter(b => b.awarded!==false && b.badge);
+  const ip            = health.investor_profile || summary.investor_profile || {};
+
+  /* ── Top actions ───────────────────────────────────────────────────────── */
   const actions = (summary.top_3_actions||[]).map((a,i) => `
     <div class="action-row">
       <div class="action-num">${i+1}</div>
       <div class="action-body">
         <div class="action-title">${a.action}</div>
-        <div class="action-rationale">${a.rationale}</div>
+        <div class="action-rationale">${a.rationale||""}</div>
       </div>
-      <span class="urgency-badge ${a.urgency==='NOW'?'badge-err':a.urgency==='THIS_WEEK'?'badge-warn':'badge-info'}">${a.urgency}</span>
+      <span class="urgency-badge ${a.urgency==="NOW"?"badge-err":a.urgency==="THIS_WEEK"?"badge-warn":"badge-info"}">${a.urgency||""}</span>
     </div>`).join("");
 
-  // Watchlist
-  const watchlist = (summary.watchlist||[]).map(w => `
-    <tr>
-      <td class="wht mo">${w.ticker}</td>
-      <td class="hide-xs"><span class="hc-exchange-badge">${w.exchange}</span></td>
-      <td>${w.reason}</td>
-      <td class="hide-sm" style="color:var(--gold2)">${w.entry_range||"—"}</td>
-      <td class="hide-sm" style="color:var(--text2)">${w.time_horizon||"—"}</td>
-    </tr>`).join("");
+  /* ── Risk colour helper ────────────────────────────────────────────────── */
+  const rc = v => v==="LOW"?"var(--green)":v==="MEDIUM"?"var(--gold)":v==="HIGH"||v==="VERY_HIGH"?"var(--red)":"var(--text3)";
 
-  // Agent result variables — all 9 agents
-  const perf     = agents.performance?.result  || {};
-  const reb      = agents.rebalancing?.result  || {};
-  const analyst  = agents.analyst?.result      || {};
-  const thematic = agents.thematic?.result     || {};
-  const corp     = agents.corporate?.result    || {};
-  const dividend = agents.dividend?.result     || {};
-  const health   = agents.health?.result       || {};
-  const verifier = agents.verifier?.result     || {};
+  /* ── Radar row helper (shared by thematic) ─────────────────────────────── */
+  const radarRow = r => {
+    const pct = r.current_pct||0, tgt = r.target_pct||10;
+    const sc  = r.status==="ON_TARGET"?"var(--green)":r.status==="OVERWEIGHT"?"var(--gold)":r.status==="UNDERWEIGHT"?"var(--gold2)":"var(--red)";
+    return `<div class="radar-row">
+      <div class="radar-theme">${r.theme}</div>
+      <div class="radar-bar-wrap">
+        <div class="radar-bar" style="width:${Math.min(100,pct*5)}%;background:${sc}"></div>
+        <div class="radar-target-line" style="left:${Math.min(100,tgt*5)}%"></div>
+      </div>
+      <div class="radar-nums">
+        <span style="color:${sc};font-family:var(--font-mono);font-size:.72rem">${pct}%</span>
+        <span style="color:var(--text3);font-size:.65rem">/ ${tgt}% target</span>
+        <span class="${r.status==="ON_TARGET"?"badge-ok":r.status==="OVERWEIGHT"?"badge-warn":r.status==="MISSING"?"badge-err":"badge-info"}" style="font-size:.58rem">${(r.status||"").replace("_"," ")}</span>
+      </div>
+    </div>`;
+  };
 
-  // High-confidence ticker lists from verifier
-  const hcTickers  = new Set((verifier.high_confidence_only?.analyst_views    || []).map(t=>t.toUpperCase()));
-  const hcDivs     =          verifier.high_confidence_only?.dividends         || null;
-  const hcCorpActs =          verifier.high_confidence_only?.corporate_actions || null;
-  const hcPicks    =          verifier.high_confidence_only?.hot_picks         || null;
-
-  // Filter helpers
-  const today = new Date().toISOString().split("T")[0];
-  const isFuture = (dateStr) => !dateStr || dateStr >= today;
-
-  // Filter analyst views to high-confidence only (with thesis)
-  const filteredAnalystViews = (analyst.analyst_views||[]).filter(a =>
-    a.key_thesis && a.key_thesis.length > 10 &&
-    (hcTickers.size === 0 || hcTickers.has(a.ticker?.toUpperCase()))
-  );
-
-  // Filter hot picks: max 4, with thesis, high confidence
-  const filteredHotPicks = (analyst.hot_picks||[])
-    .filter(p => p.thesis && p.thesis.length > 10)
-    .slice(0, 4);
-
-  // Filter dividends: future only
-  const filteredDivs = (corp.dividends||[])
-    .filter(d => isFuture(d.ex_date) || isFuture(d.payment_date));
-
-  // Filter corporate actions: future only
-  const filteredCorpActs = (corp.corporate_actions||[])
-    .filter(a => isFuture(a.date));
-
-  // Filter key dates: future only
-  const filteredKeyDates = (corp.key_dates_next_30_days||[])
-    .filter(d => isFuture(d.date))
-    .sort((a,b) => a.date.localeCompare(b.date));
-
+  /* ════════════════════════════════════════════════════════════════════════
+     BUILD HTML
+  ════════════════════════════════════════════════════════════════════════ */
   wrap.innerHTML = `
-    <!-- Executive Summary -->
-    <div class="panel review-panel">
-      <div class="review-kpi-row">
-        <div>
-          <div class="review-headline">${summary.headline || "Weekly Portfolio Review"}</div>
-          <div style="color:var(--text2);font-size:.9rem;margin-top:.4rem">${date}</div>
+
+  <!-- ① SUMMARY HEADER ─────────────────────────────────────────────────── -->
+  <div class="review-header-card" style="
+    background:var(--bg2);border:1px solid var(--border);border-radius:14px;
+    padding:1.4rem 1.6rem;margin-bottom:1.2rem">
+
+    <!-- Rating + Date -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem;margin-bottom:.8rem">
+      <div style="display:flex;align-items:center;gap:.7rem">
+        <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);text-transform:uppercase">
+          ${date}
         </div>
-        <div class="rating-badge" style="border-color:${ratingColor};color:${ratingColor}">
-          ${summary.overall_rating || "—"}
+        <span class="urgency-badge ${summary.overall_rating==="STRONG"||summary.overall_rating==="GOOD"?"badge-ok":summary.overall_rating==="CAUTION"||summary.overall_rating==="REVIEW"?"badge-err":"badge-warn"}"
+              style="font-size:.65rem">
+          ${summary.overall_rating||"—"}
+        </span>
+        ${health.health_score ? `<span style="font-family:var(--font-mono);font-size:.72rem;color:${health.health_score>=70?"var(--green)":health.health_score>=50?"var(--gold)":"var(--red)"}">Health ${health.health_score}/100</span>` : ""}
+      </div>
+      ${verifier.overall_confidence ? `
+        <span style="font-family:var(--font-mono);font-size:.62rem;color:${rc(verifier.overall_confidence)}">
+          ✅ Verified · ${verifier.overall_confidence} confidence
+          ${verifier.passes_completed===2?"· 2-pass":""}
+        </span>` : ""}
+    </div>
+
+    <!-- Headline -->
+    ${summary.headline ? `
+      <div style="font-family:var(--font-serif);font-size:1.35rem;font-weight:300;color:var(--text);margin-bottom:.6rem;line-height:1.3">
+        ${summary.headline}
+      </div>` : ""}
+
+    <!-- Executive summary -->
+    ${summary.executive_summary ? `
+      <p style="font-size:.88rem;color:var(--text2);line-height:1.6;margin-bottom:.9rem">
+        ${summary.executive_summary}
+      </p>` : ""}
+
+    <!-- Investor type strip -->
+    ${ip.type ? `
+      <div style="display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;padding:.6rem .9rem;
+                  background:var(--bg3);border-radius:10px;margin-bottom:.8rem">
+        <span style="font-size:1.4rem">${ICONS[ip.type]||"📊"}</span>
+        <span style="font-family:var(--font-serif);font-size:.95rem;color:var(--text)">${ip.type}</span>
+        ${ip.sub_type?`<span style="font-family:var(--font-mono);font-size:.6rem;color:var(--gold2)">${ip.sub_type}</span>`:""}
+        <span class="investor-pill" style="border-color:${RISK_C[ip.risk_appetite]||"var(--gold)"};color:${RISK_C[ip.risk_appetite]||"var(--gold)"}">${ip.risk_appetite||""}</span>
+        <span class="investor-pill">${ip.time_horizon||""}</span>
+        <span class="investor-pill">${ip.primary_goal||""}</span>
+      </div>` : ""}
+
+    <!-- Portfolio badges -->
+    ${badges.length ? `
+      <div style="display:flex;flex-wrap:wrap;gap:.45rem">
+        ${badges.map(b=>`
+          <div class="portfolio-badge" title="${b.description||""}">
+            <span class="badge-icon">${badgeIcon(b)}</span>
+            <span class="badge-name">${b.badge}</span>
+          </div>`).join("")}
+      </div>` : ""}
+
+    <!-- Income KPIs strip -->
+    ${(dividend.summary?.projected_annual_kes||summary.income_summary?.projected_annual_kes) ? `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-top:.8rem">
+        <div style="text-align:center;padding:.4rem;background:var(--bg3);border-radius:8px">
+          <div style="font-size:.62rem;color:var(--text3)">Received YTD</div>
+          <div style="font-family:var(--font-mono);font-size:.82rem;color:var(--green)">${fmt(dividend.summary?.ytd_income_kes||summary.income_summary?.ytd_income_kes||0)}</div>
         </div>
-      </div>
-      <p class="review-summary-text">${summary.executive_summary || ""}</p>
-      ${summary.kes_impact_note ? `<div class="review-fx-note">💱 ${summary.kes_impact_note}</div>` : ""}
-    </div>
-
-    <!-- Investor Profile + Portfolio Badges -->
-    ${(() => {
-      const ip     = health.investor_profile || summary.investor_profile || {};
-      const badges = (health.portfolio_badges||summary.portfolio_badges||[]).filter(b => b.awarded !== false && b.badge);
-      if (!ip.type && !badges.length) return "";
-
-      const RISK_COLOR = {CONSERVATIVE:"var(--green)",MODERATE:"var(--gold)",AGGRESSIVE:"var(--red)"};
-      const ICONS = {"Growth Investor":"🚀","Income Investor":"💰","Value Investor":"🔍",
-        "Balanced Investor":"⚖️","Speculative Trader":"⚡","Africa-Focused Investor":"🌍",
-        "Conservative Saver":"🛡️","Thematic Investor":"🌐"};
-      const rc = RISK_COLOR[ip.risk_appetite] || "var(--gold)";
-
-      return `<div class="panel">
-        ${ip.type ? `
-        <div style="display:flex;align-items:flex-start;gap:1rem;flex-wrap:wrap;margin-bottom:${badges.length?"1rem":"0"}">
-          <div style="font-size:2.2rem;flex-shrink:0">${ICONS[ip.type]||"📊"}</div>
-          <div style="flex:1;min-width:0">
-            <div style="font-family:var(--font-serif);font-size:1.1rem;color:var(--text)">${ip.type}</div>
-            ${ip.sub_type?`<div style="font-family:var(--font-mono);font-size:.65rem;color:var(--gold2);margin:.15rem 0">${ip.sub_type}</div>`:""}
-            ${ip.description?`<p style="font-size:.82rem;color:var(--text2);margin:.4rem 0 .6rem">${ip.description}</p>`:""}
-            <div style="display:flex;gap:.4rem;flex-wrap:wrap">
-              ${ip.risk_appetite?`<span class="investor-pill" style="border-color:${rc};color:${rc}">${ip.risk_appetite}</span>`:""}
-              ${ip.time_horizon?`<span class="investor-pill">${ip.time_horizon}</span>`:""}
-              ${ip.primary_goal?`<span class="investor-pill">${ip.primary_goal}</span>`:""}
-            </div>
-          </div>
-        </div>` : ""}
-
-        ${badges.length ? `
-        <div class="panel-title" style="${ip.type?"border-top:1px solid var(--border);padding-top:.8rem;margin-top:.2rem":""}">
-          🏆 Portfolio Badges
+        <div style="text-align:center;padding:.4rem;background:var(--bg3);border-radius:8px">
+          <div style="font-size:.62rem;color:var(--text3)">Expected Remaining</div>
+          <div style="font-family:var(--font-mono);font-size:.82rem;color:var(--gold2)">${fmt(dividend.summary?.expected_remaining_kes||0)}</div>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:.6rem;padding:.3rem 0">
-          ${badges.map(b => `
-            <div class="badge-card">
-              <span class="badge-big-icon">${badgeIcon(b)}</span>
-              <div>
-                <div style="font-size:.84rem;color:var(--text);font-weight:500">${b.badge}</div>
-                <div style="font-size:.7rem;color:var(--text3)">${b.description||""}</div>
-              </div>
-            </div>`).join("")}
-        </div>` : ""}
-      </div>`;
-    })()}
+        <div style="text-align:center;padding:.4rem;background:var(--bg3);border-radius:8px">
+          <div style="font-size:.62rem;color:var(--text3)">Projected Annual</div>
+          <div style="font-family:var(--font-mono);font-size:.82rem;color:var(--text)">${fmt(dividend.summary?.projected_annual_kes||summary.income_summary?.projected_annual_kes||0)}</div>
+        </div>
+      </div>` : ""}
+  </div>
 
-    <!-- Top 3 Actions -->
-    ${actions ? `<div class="panel">
-      <div class="panel-title">Top Actions This Week</div>
-      <div class="actions-list">${actions}</div>
-    </div>` : ""}
+  <!-- ② TOP ACTIONS ────────────────────────────────────────────────────── -->
+  ${actions ? `
+  <div class="panel">
+    <div class="panel-title">⚡ Top Actions This Week</div>
+    <div class="actions-list">${actions}</div>
+    ${summary.next_review_focus ? `
+      <div style="font-size:.75rem;color:var(--text3);font-family:var(--font-mono);margin-top:.8rem;padding-top:.6rem;border-top:1px solid var(--border)">
+        Next review focus: ${summary.next_review_focus}
+      </div>` : ""}
+  </div>` : ""}
 
-    <!-- Performance + Rebalancing -->
-    <div class="review-grid-2">
-      <div class="panel">
-        <div class="panel-title">📊 Performance — ${perf.overall_rating||""}</div>
-        <p style="font-size:.84rem;color:var(--text2)">${perf.performance_commentary||""}</p>
-        ${(perf.top_performers||[]).length ? `
-          <div style="margin-top:.8rem">
-            <div class="review-sub">Top Performers</div>
-            ${perf.top_performers.map(h=>`<div class="perf-row pos">
-              <span class="mo">${h.ticker}</span>
-              <span style="color:var(--green)">${h.return_pct>0?"+":""}${h.return_pct}%</span>
-              <span style="color:var(--text3);font-size:.75rem">${h.note}</span>
-            </div>`).join("")}
-          </div>` : ""}
-        ${(perf.underperformers||[]).length ? `
-          <div style="margin-top:.8rem">
-            <div class="review-sub">Underperformers</div>
-            ${perf.underperformers.map(h=>`<div class="perf-row neg">
-              <span class="mo">${h.ticker}</span>
-              <span style="color:var(--red)">${h.return_pct}%</span>
-              <span style="color:var(--text3);font-size:.75rem">${h.note}</span>
-            </div>`).join("")}
-          </div>` : ""}
-      </div>
-      <div class="panel">
-        <div class="panel-title">⚖️ Rebalancing — ${reb.overall_balance||""}</div>
-        <p style="font-size:.84rem;color:var(--text2)">${reb.rebalancing_summary||""}</p>
-        ${(reb.rebalancing_actions||[]).length ? `
-          <div style="margin-top:.8rem">
-            ${reb.rebalancing_actions.map(a=>`<div class="reb-row">
-              <span class="reb-action ${a.action==="BUY"||a.action==="ADD"?"pos":a.action==="SELL"||a.action==="TRIM"?"neg":""}">${a.action}</span>
-              <span class="mo" style="color:var(--text)">${a.ticker||a.asset_class_or_sector||""}</span>
-              <span style="color:var(--text3);font-size:.78rem">${a.rationale}</span>
-            </div>`).join("")}
-          </div>` : ""}
-      </div>
-    </div>
+  <!-- ③ PERFORMANCE + REBALANCING (side by side) ──────────────────────── -->
+  <div class="review-grid-2">
 
-    <!-- Analyst Views -->
-    <div class="panel">
-      <div class="panel-title" style="justify-content:space-between"><span>🔍 Analyst Intelligence</span><span style="font-size:.65rem;font-family:var(--font-mono);color:var(--text3)">HIGH confidence · multi-source · with thesis only</span></div>
-      ${filteredAnalystViews.length ? `
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Consensus</th><th>Target</th><th>Upside</th><th class="hide-sm">Thesis</th></tr></thead>
-            <tbody>${filteredAnalystViews.map(a=>`<tr>
-              <td class="wht mo">${a.ticker}</td>
-              <td class="hide-xs"><span class="hc-exchange-badge">${a.exchange}</span></td>
-              <td><span class="consensus-badge ${a.consensus}">${a.consensus}</span></td>
-              <td class="mo" style="color:var(--gold2)">${a.avg_price_target||"—"}</td>
-              <td class="mo ${(a.upside_pct||0)>=0?'pos':'neg'}">${a.upside_pct?a.upside_pct+"%":"—"}</td>
-              <td class="hide-sm" style="font-size:.76rem;color:var(--text2)">${a.key_thesis||""}</td>
-            </tr>`).join("")}</tbody>
-          </table>
-        </div>` : "<p class='empty-msg'>No analyst data fetched.</p>"}
-      ${filteredHotPicks.length ? `
-        <div style="margin-top:1.2rem">
-          <div class="review-sub">Hot Picks</div>
-          ${filteredHotPicks.map(p=>`<div class="pick-row">
-            <span class="mo wht">${p.ticker}</span>
-            <span class="hc-exchange-badge hide-xs">${p.exchange}</span>
-            <span style="color:var(--gold2)">${p.rating}</span>
-            <span style="color:var(--text2);font-size:.78rem">${p.thesis}</span>
-          </div>`).join("")}
-        </div>` : ""}
-    </div>
-
-    <!-- Corporate Actions -->
-    <div class="panel">
-      <div class="panel-title" style="justify-content:space-between"><span>📅 Corporate Actions</span><span style="font-size:.65rem;font-family:var(--font-mono);color:var(--text3)">future events only</span></div>
-      ${filteredKeyDates.length ? `
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr><th>Date</th><th>Ticker</th><th>Event</th><th class="hide-sm">Importance</th></tr></thead>
-            <tbody>${filteredKeyDates.map(e=>`<tr>
-              <td class="mo">${e.date}</td>
-              <td class="wht mo">${e.ticker}</td>
-              <td style="font-size:.8rem">${e.event}</td>
-              <td class="hide-sm"><span class="${e.importance==='HIGH'?'badge-err':e.importance==='MEDIUM'?'badge-warn':'badge-info'}">${e.importance}</span></td>
-            </tr>`).join("")}</tbody>
-          </table>
-        </div>` : ""}
-      ${filteredDivs.length ? `
-        <div style="margin-top:1rem">
-          <div class="review-sub">Dividends</div>
-          ${filteredDivs.map(d=>`<div class="contrib-row">
-            <span class="mo wht">${d.ticker}</span>
-            <span style="color:var(--gold2)">${d.currency} ${d.declared_amount}</span>
-            <span style="color:var(--text3);font-size:.75rem">Ex: ${d.ex_date||"—"} · Pay: ${d.payment_date||"—"}</span>
-            ${d.yield_pct?`<span style="color:var(--green);font-family:var(--font-mono);font-size:.72rem">${d.yield_pct}% yield</span>`:""}
-          </div>`).join("")}
-        </div>` : ""}
-    </div>
-
-    <!-- Thematic -->
-    <div class="panel">
-      <div class="panel-title">🌐 Thematic Opportunities (10–30yr)</div>
-      <p style="font-size:.84rem;color:var(--text2)">${thematic.thematic_summary||""}</p>
-      <div class="thematic-grid">
-        ${(thematic.megatrends||[]).map(t=>`
-          <div class="theme-card">
-            <div class="theme-head">
-              <span class="theme-name">${t.theme}</span>
-              <span class="theme-horizon">${t.horizon}</span>
-              <span class="${t.conviction==='HIGH'?'badge-ok':t.conviction==='MEDIUM'?'badge-warn':'badge-info'}">${t.conviction}</span>
-            </div>
-            <p style="font-size:.78rem;color:var(--text2);margin:.4rem 0">${t.rationale}</p>
-            <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--text3)">Exposure: ${t.current_exposure}</div>
-            ${(t.instruments||[]).map(i=>`<div class="theme-instrument">
-              <span class="mo wht">${i.ticker}</span>
-              <span class="hc-exchange-badge">${i.exchange}</span>
-              <span style="font-size:.72rem;color:var(--text2)">${i.why}</span>
-            </div>`).join("")}
-          </div>`).join("")}
-      </div>
-    </div>
-
-    <!-- Verifier note -->
-    ${verifier.verifier_note ? `
-    <div class="panel" style="border-color:rgba(92,158,106,.3);background:rgba(92,158,106,.04)">
-      <div class="panel-title" style="color:var(--green);justify-content:space-between">
-        <span>✅ Verification ${verifier.passes_completed === 2 ? "(2-Pass)" : "Complete"}</span>
-        ${verifier.passes_completed === 2
-          ? `<span style="font-family:var(--font-mono);font-size:.65rem;color:var(--green)">
-              Verified revised outputs ✓
-             </span>`
-          : ""}
-      </div>
-      <p style="font-size:.82rem;color:var(--text2)">${verifier.verifier_note}</p>
-      ${verifier.revised_agents?.length ? `
-        <div style="font-family:var(--font-mono);font-size:.7rem;color:var(--gold2);margin:.4rem 0">
-          Agents revised after first pass: ${verifier.revised_agents.join(", ")}
-        </div>` : ""}
-      <div style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3);margin-top:.4rem">
-        Confidence: <strong style="color:${verifier.overall_confidence==="HIGH"?"var(--green)":verifier.overall_confidence==="MEDIUM"?"var(--gold)":"var(--red)"}">${verifier.overall_confidence||"—"}</strong>
-        · ${Object.entries(verifier.reliability_scores||{}).map(([k,v])=>
-            `${k}: <span style="color:${v==="HIGH"?"var(--green)":v==="MEDIUM"?"var(--gold)":"var(--red)"}">${v}</span>`
-          ).join(" · ")}
-      </div>
-    </div>` : ""}
-
-    <!-- Dividend Intelligence -->
-    ${(dividend.summary || dividend.ytd_received?.length) ? `
+    <!-- Performance -->
+    ${(perf.health_score||perf.performance_commentary||perf.top_performers?.length) ? `
     <div class="panel">
       <div class="panel-title" style="justify-content:space-between">
-        <span>💰 Dividend Intelligence</span>
-        <span style="font-family:var(--font-mono);font-size:.72rem;color:var(--text3)">
-          ${dividend.summary?.portfolio_yield_pct||0}% portfolio yield
-        </span>
+        <span>📊 Performance</span>
+        ${perf.overall_rating?`<span class="urgency-badge ${perf.overall_rating==="STRONG"||perf.overall_rating==="GOOD"?"badge-ok":"badge-warn"}" style="font-size:.6rem">${perf.overall_rating}</span>`:""}
       </div>
-      ${dividend.summary?.income_commentary ? `<p style="font-size:.84rem;color:var(--text2);margin-bottom:.8rem">${dividend.summary.income_commentary}</p>` : ""}
-
-      <!-- Summary KPIs: 3 numbers -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;margin-bottom:1.2rem">
-        <div class="kpi-card">
-          <div class="kpi-label">Received YTD</div>
-          <div class="kpi-val" style="color:var(--green)">${fmt(dividend.summary?.ytd_income_kes||0)}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">Expected Remaining</div>
-          <div class="kpi-val" style="color:var(--gold2)">${fmt(dividend.summary?.expected_remaining_kes||0)}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">Projected Annual</div>
-          <div class="kpi-val" style="color:var(--text)">${fmt(dividend.summary?.projected_annual_kes||0)}</div>
-        </div>
-      </div>
-
-      <!-- Received detail table (only what was actually received) -->
-      ${(dividend.ytd_received||[]).length ? `
-        <div class="review-sub" style="margin-bottom:.5rem">Received This Year</div>
-        <div class="table-wrap" style="margin-bottom:1.2rem">
-          <table class="data-table" style="font-size:.78rem">
-            <thead><tr>
-              <th>Ticker</th>
-              <th class="hide-xs">Exch</th>
-              <th>Ex-Date</th>
-              <th class="num-col">Per Share</th>
-              <th class="num-col">Total (Native)</th>
-              <th class="num-col">KES Value</th>
-              <th class="hide-sm">Type</th>
-            </tr></thead>
-            <tbody>${(dividend.ytd_received||[]).map(d=>`<tr>
-              <td class="wht mo">${d.ticker}</td>
-              <td class="hide-xs"><span class="hc-exchange-badge">${d.exchange||""}</span></td>
-              <td class="mo" style="font-family:var(--font-mono);font-size:.72rem">${d.ex_date||"—"}</td>
-              <td class="num-col mo">${d.currency||"KES"} ${(d.amount_per_share||0).toFixed ? (d.amount_per_share).toFixed(2) : d.amount_per_share}</td>
-              <td class="num-col mo pos">+${d.currency||"KES"} ${(d.total_received||0).toLocaleString("en-KE")}</td>
-              <td class="num-col" style="color:var(--green)">${fmt(d.total_kes||0)}</td>
-              <td class="hide-sm"><span class="badge-info" style="font-size:.6rem">${d.type||"—"}</span></td>
-            </tr>`).join("")}</tbody>
-          </table>
-        </div>` : `
-        <div style="font-size:.82rem;color:var(--text3);padding:.5rem 0;margin-bottom:1rem">
-          No dividends received yet this year.
-        </div>`}
-
-      <!-- Expected: summary only (no detail table) -->
-      ${(dividend.expected_remaining||[]).length ? `
-        <div class="review-sub" style="margin-bottom:.5rem">
-          Expected Remaining (${dividend.expected_remaining.length} payment${dividend.expected_remaining.length!==1?"s":""})
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:.4rem">
-          ${(dividend.expected_remaining||[]).map(d=>`
-            <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;font-size:.72rem">
-              <span style="color:var(--text);font-weight:500">${d.ticker}</span>
-              <span style="color:var(--text3);margin:0 .3rem">·</span>
-              <span style="color:var(--gold2);font-family:var(--font-mono)">${fmt(d.total_kes_expected||0)}</span>
-              <span style="color:var(--text3);font-size:.62rem;margin-left:.3rem">${d.expected_ex_date||""}</span>
-              <span class="${d.confidence==="HIGH"?"badge-ok":d.confidence==="MEDIUM"?"badge-warn":"badge-info"}" style="font-size:.55rem;margin-left:.3rem">${d.confidence||""}</span>
-            </div>`).join("")}
-        </div>` : ""}
-    </div>` : ""}
-
-    <!-- Portfolio Health + Stress Tests (from dedicated agent) -->
-    ${health.risk_metrics || health.stress_tests?.length ? `
-    <div class="review-grid-2">
-      <div class="panel">
-        <div class="panel-title">🏥 Portfolio Health Metrics</div>
-        ${health.risk_metrics ? `
-          <div class="target-nums">
-            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.sharpe_ratio||"—"}</div><div class="tnum-lbl">Sharpe Ratio</div></div>
-            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.estimated_volatility||"—"}</div><div class="tnum-lbl">Volatility</div></div>
-            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.beta_to_global||"—"}</div><div class="tnum-lbl">Beta</div></div>
-            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.concentration_risk||"—"}</div><div class="tnum-lbl">Concentration</div></div>
-            <div class="tnum-item"><div class="tnum-val">${health.risk_metrics.currency_risk||"—"}</div><div class="tnum-lbl">Currency Risk</div></div>
+      ${perf.health_score!=null ? `
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.7rem">
+          <div style="flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden">
+            <div style="height:100%;width:${perf.health_score}%;background:${perf.health_score>=70?"var(--green)":perf.health_score>=50?"var(--gold)":"var(--red)"};border-radius:4px"></div>
           </div>
-          ${(health.improvement_suggestions||[]).map(s=>`<div class="insight-row ins-action"><span class="ins-icon">💡</span><span>${s}</span></div>`).join("")}
-        ` : ""}
-      </div>
-      <div class="panel">
-        <div class="panel-title">⚡ Stress Tests</div>
-        ${(health.stress_tests||[]).map(st=>`
-          <div style="padding:.6rem 0;border-bottom:1px solid var(--border)">
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
-              <div>
-                <div style="font-size:.84rem;color:var(--text)">${st.scenario}</div>
-                <div style="font-size:.72rem;color:var(--text3)">${st.description}</div>
-              </div>
-              <div style="font-family:var(--font-mono);font-size:.9rem;color:var(--red);white-space:nowrap">
-                ${st.estimated_loss_pct>0?"-":"+"}${Math.abs(st.estimated_loss_pct||0)}%
-                <div style="font-size:.65rem;color:var(--text3)">-${fmt(st.estimated_loss_kes||0)}</div>
-              </div>
-            </div>
-          </div>`).join("")}
-      </div>
-    
-
-      <!-- Exposure Radar (inside thematic section) -->
-      ${(thematic.exposure_radar||[]).length ? `
-        <div class="review-sub" style="margin-top:1rem;margin-bottom:.5rem">Exposure Radar</div>
-        <div class="thematic-radar">
-          ${thematic.exposure_radar.map(r => {
-            const pct = r.current_pct||0;
-            const tgt = r.target_pct||10;
-            const statusColor = r.status==="ON_TARGET"?"var(--green)":r.status==="OVERWEIGHT"?"var(--gold)":r.status==="UNDERWEIGHT"?"var(--gold2)":"var(--red)";
-            return `<div class="radar-row">
-              <div class="radar-theme">${r.theme}</div>
-              <div class="radar-bar-wrap">
-                <div class="radar-bar" style="width:${Math.min(100,pct*5)}%;background:${statusColor}"></div>
-                <div class="radar-target-line" style="left:${Math.min(100,tgt*5)}%"></div>
-              </div>
-              <div class="radar-nums">
-                <span style="color:${statusColor};font-family:var(--font-mono);font-size:.72rem">${pct}%</span>
-                <span style="color:var(--text3);font-size:.65rem">/ ${tgt}% target</span>
-                <span class="${r.status==="ON_TARGET"?"badge-ok":r.status==="OVERWEIGHT"?"badge-warn":r.status==="MISSING"?"badge-err":"badge-info"}" style="font-size:.58rem">${(r.status||"").replace("_"," ")}</span>
-              </div>
-            </div>`;
-          }).join("")}
+          <span style="font-family:var(--font-mono);font-size:.72rem">${perf.health_score}/100</span>
         </div>` : ""}
-    </div>` : ""}
-    ${(thematic.exposure_radar||[]).length ? `
-    <div class="panel">
-      <div class="panel-title">🌐 Thematic Exposure</div>
-      <div class="thematic-radar">
-        ${thematic.exposure_radar.map(r => {
-          const pct = r.current_pct||0;
-          const tgt = r.target_pct||10;
-          const ratio = Math.min(1, pct/tgt);
-          const statusColor = r.status==="ON_TARGET"?"var(--green)":r.status==="OVERWEIGHT"?"var(--gold)":r.status==="UNDERWEIGHT"?"var(--gold2)":"var(--red)";
-          return `<div class="radar-row">
-            <div class="radar-theme">${r.theme}</div>
-            <div class="radar-bar-wrap">
-              <div class="radar-bar" style="width:${Math.min(100,pct*5)}%;background:${statusColor}"></div>
-              <div class="radar-target-line" style="left:${Math.min(100,tgt*5)}%"></div>
-            </div>
-            <div class="radar-nums">
-              <span style="color:${statusColor};font-family:var(--font-mono);font-size:.72rem">${pct}%</span>
-              <span style="color:var(--text3);font-size:.65rem">/ ${tgt}% target</span>
-              <span class="${r.status==="ON_TARGET"?"badge-ok":r.status==="OVERWEIGHT"?"badge-warn":r.status==="MISSING"?"badge-err":"badge-info"}"
-                    style="font-size:.58rem">${r.status?.replace("_"," ")||""}</span>
-            </div>
-          </div>`;
-        }).join("")}
-      </div>
+      ${perf.performance_commentary?`<p style="font-size:.82rem;color:var(--text2);margin-bottom:.7rem">${perf.performance_commentary}</p>`:""}
+      ${(perf.top_performers||[]).length ? `
+        <div class="review-sub" style="margin-bottom:.4rem">Top performers</div>
+        ${perf.top_performers.slice(0,3).map(h=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.3rem 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:.82rem;color:var(--text)">${h.ticker} <span style="color:var(--text3);font-size:.7rem">${h.exchange||""}</span></span>
+            <span style="font-family:var(--font-mono);font-size:.78rem;color:var(--green)">+${h.return_pct||0}%</span>
+          </div>`).join("")}` : ""}
+      ${(perf.underperformers||[]).length ? `
+        <div class="review-sub" style="margin:.6rem 0 .4rem">Watch</div>
+        ${perf.underperformers.slice(0,2).map(h=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.3rem 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:.82rem;color:var(--text)">${h.ticker}</span>
+            <span style="font-family:var(--font-mono);font-size:.78rem;color:var(--red)">${h.return_pct||0}%</span>
+          </div>`).join("")}` : ""}
     </div>` : ""}
 
-    <!-- Portfolio Badges (from health agent) -->
-    ${(health.portfolio_badges||summary.portfolio_badges||[]).filter(b=>b.awarded!==false).length ? `
-    <div class="panel">
-      <div class="panel-title">🏆 Portfolio Badges Earned</div>
-      <div style="display:flex;flex-wrap:wrap;gap:.7rem;padding:.3rem 0">
-        ${(health.portfolio_badges||summary.portfolio_badges||[]).filter(b=>b.awarded!==false).map(b=>`
-          <div class="badge-card">
-            <span class="badge-big-icon">${b.icon||"✦"}</span>
-            <div><div style="font-size:.84rem;color:var(--text)">${b.badge}</div><div style="font-size:.7rem;color:var(--text3)">${b.description||""}</div></div>
-          </div>`).join("")}
-      </div>
-    </div>` : ""}
-
-    <!-- Rebalancing actions with trim figures -->
+    <!-- Rebalancing (trim actions) -->
     ${(reb.rebalancing_actions||[]).length ? `
     <div class="panel">
-      <div class="panel-title">⚖️ Rebalancing Actions</div>
-      <p style="font-size:.84rem;color:var(--text2);margin-bottom:.8rem">${reb.rebalancing_summary||""}</p>
-      <div class="table-wrap">
-        <table class="data-table" style="font-size:.78rem">
-          <thead><tr><th>Priority</th><th>Action</th><th>Ticker</th><th class="hide-xs">Exchange</th><th class="num-col hide-sm">Trim %</th><th class="num-col hide-sm">Est. Value KES</th><th>Rationale</th></tr></thead>
-          <tbody>${reb.rebalancing_actions.map(a=>`<tr>
-            <td><span class="${a.priority==='HIGH'?'badge-err':a.priority==='MEDIUM'?'badge-warn':'badge-info'}">${a.priority}</span></td>
-            <td><span class="reb-action ${['BUY','ADD'].includes(a.action)?'pos':['SELL','TRIM'].includes(a.action)?'neg':''}">${a.action}</span></td>
-            <td class="wht mo">${a.ticker||a.asset_class_or_sector||"—"}</td>
-            <td class="hide-xs"><span class="hc-exchange-badge hide-xs">${a.exchange||""}</span></td>
-            <td class="num-col hide-sm">${a.trim_pct?a.trim_pct+"%":"—"}</td>
-            <td class="num-col hide-sm">${a.trim_value_kes_approx?`${fmt(a.trim_value_kes_approx)}`:"—"}</td>
-            <td style="font-size:.75rem;color:var(--text2)">${a.rationale||""}</td>
-          </tr>`).join("")}</tbody>
-        </table>
+      <div class="panel-title" style="justify-content:space-between">
+        <span>⚖️ Rebalancing</span>
+        ${reb.overall_balance?`<span style="font-family:var(--font-mono);font-size:.62rem;color:var(--text3)">${reb.overall_balance}</span>`:""}
       </div>
+      ${reb.rebalancing_summary?`<p style="font-size:.82rem;color:var(--text2);margin-bottom:.7rem">${reb.rebalancing_summary}</p>`:""}
+      ${reb.rebalancing_actions.slice(0,5).map(a=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem 0;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:.3rem">
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <span class="reb-action ${["BUY","ADD"].includes(a.action)?"pos":["SELL","TRIM"].includes(a.action)?"neg":""}">${a.action}</span>
+            <span style="font-size:.82rem;color:var(--text);font-weight:500">${a.ticker||a.asset_class_or_sector||"—"}</span>
+            <span class="hc-exchange-badge hide-xs">${a.exchange||""}</span>
+          </div>
+          <div style="text-align:right;font-family:var(--font-mono);font-size:.72rem">
+            ${a.trim_pct?`<span style="color:var(--gold2)">${a.trim_pct}%</span> `:""}
+            ${a.trim_value_kes_approx?`<span style="color:var(--text3)">${fmt(a.trim_value_kes_approx)}</span>`:""}
+          </div>
+          <div style="font-size:.72rem;color:var(--text3);width:100%">${a.rationale||""}</div>
+        </div>`).join("")}
+    </div>` : ""}
+  </div>
+
+  <!-- ④ PORTFOLIO HEALTH ──────────────────────────────────────────────── -->
+  ${(health.risk_metrics||health.stress_tests?.length||health.health_score) ? `
+  <div class="panel">
+    <div class="panel-title" style="justify-content:space-between">
+      <span>🏥 Portfolio Health</span>
+      ${health.health_score?`<span style="font-family:var(--font-mono);font-size:.9rem;color:${health.health_score>=70?"var(--green)":health.health_score>=50?"var(--gold)":"var(--red)"}">${health.health_score}/100</span>`:""}
+    </div>
+    ${health.health_commentary?`<p style="font-size:.84rem;color:var(--text2);margin-bottom:1rem">${health.health_commentary}</p>`:""}
+
+    <!-- 4-dimension score bars -->
+    ${health.health_breakdown ? `
+    <div style="margin-bottom:1rem">
+      ${Object.entries(health.health_breakdown).map(([dim,score])=>`
+        <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.4rem">
+          <div style="font-size:.7rem;color:var(--text3);width:110px;flex-shrink:0;text-transform:capitalize">${dim.replace(/_/g," ")}</div>
+          <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${(score/25)*100}%;background:${score>=20?"var(--green)":score>=13?"var(--gold)":"var(--red)"};border-radius:3px"></div>
+          </div>
+          <div style="font-family:var(--font-mono);font-size:.7rem;color:var(--text3);width:36px;text-align:right">${score}/25</div>
+        </div>`).join("")}
     </div>` : ""}
 
-    <!-- Watchlist + Risks + Next focus -->
-    <div class="review-grid-2">
-      <div class="panel">
-        <div class="panel-title">Watchlist</div>
-        ${watchlist ? `<div class="table-wrap"><table class="data-table">
-          <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Reason</th><th class="hide-sm">Entry</th><th class="hide-sm">Horizon</th></tr></thead>
-          <tbody>${watchlist}</tbody></table></div>` : "<p class='empty-msg'>No watchlist items.</p>"}
+    <!-- Risk metrics grid -->
+    ${health.risk_metrics ? `
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:.5rem;margin-bottom:.8rem">
+      <div class="kpi-card">
+        <div class="kpi-label">Sharpe Ratio</div>
+        <div class="kpi-val" style="color:${(health.risk_metrics.sharpe_ratio||0)>=1?"var(--green)":(health.risk_metrics.sharpe_ratio||0)>=0?"var(--gold)":"var(--red)"}">${health.risk_metrics.sharpe_ratio||"—"}</div>
       </div>
-      <div class="panel">
-        <div class="panel-title">Risks & Opportunities</div>
-        ${(summary.risks_to_watch||[]).length ? `
-          <div class="review-sub" style="color:var(--red)">Risks</div>
-          ${summary.risks_to_watch.map(r=>`<div style="font-size:.82rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">⚠ ${r}</div>`).join("")}` : ""}
-        ${(summary.opportunities||[]).length ? `
-          <div class="review-sub" style="color:var(--green);margin-top:.8rem">Opportunities</div>
-          ${summary.opportunities.map(o=>`<div style="font-size:.82rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">✦ ${o}</div>`).join("")}` : ""}
-        ${summary.next_review_focus ? `
-          <div style="margin-top:1rem;font-size:.78rem;color:var(--text3);font-family:var(--font-mono)">
-            Next week: ${summary.next_review_focus}
-          </div>` : ""}
+      <div class="kpi-card">
+        <div class="kpi-label">Risk-Free Rate</div>
+        <div class="kpi-val">${health.risk_metrics.risk_free_rate_pct||"—"}%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Volatility</div>
+        <div class="kpi-val" style="color:${rc(health.risk_metrics.estimated_volatility)}">${health.risk_metrics.estimated_volatility||"—"}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Largest Position</div>
+        <div class="kpi-val" style="color:${(health.risk_metrics.largest_position_pct||0)>30?"var(--red)":(health.risk_metrics.largest_position_pct||0)>20?"var(--gold)":"var(--green)"}">
+          ${health.risk_metrics.largest_position_ticker||""} ${health.risk_metrics.largest_position_pct||"—"}%
+        </div>
       </div>
     </div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem">
+      ${[["Concentration",health.risk_metrics.concentration_risk],["Currency",health.risk_metrics.currency_risk],["Liquidity",health.risk_metrics.liquidity_risk]]
+        .map(([l,v])=>`<div style="flex:1;min-width:80px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.4rem;text-align:center">
+          <div style="font-size:.6rem;color:var(--text3)">${l}</div>
+          <div style="font-family:var(--font-mono);font-size:.75rem;color:${rc(v)}">${v||"—"}</div>
+        </div>`).join("")}
+    </div>` : ""}
+
+    <!-- Asset class health table -->
+    ${(health.asset_class_health||[]).length ? `
+    <div class="review-sub" style="margin-bottom:.4rem">Asset Class Health</div>
+    <div class="table-wrap" style="margin-bottom:.8rem">
+      <table class="data-table" style="font-size:.75rem">
+        <thead><tr><th>Class</th><th class="num-col">Alloc %</th><th>Status</th><th class="hide-sm">Comment</th></tr></thead>
+        <tbody>${health.asset_class_health.map(ac=>`<tr>
+          <td class="mo">${ac.class||""}</td>
+          <td class="num-col mo" style="font-family:var(--font-mono)">${ac.allocation_pct||0}%</td>
+          <td><span class="${ac.health==="STRONG"||ac.health==="GOOD"?"badge-ok":ac.health==="NEUTRAL"?"badge-info":"badge-err"}">${ac.health||"—"}</span></td>
+          <td class="hide-sm" style="font-size:.72rem;color:var(--text2)">${ac.comment||""}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>` : ""}
+
+    <!-- Stress tests -->
+    ${(health.stress_tests||[]).length ? `
+    <div class="review-sub" style="margin-bottom:.4rem">⚡ Stress Tests</div>
+    ${health.stress_tests.map(st=>`
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:.5rem 0;border-bottom:1px solid var(--border);gap:.5rem;flex-wrap:wrap">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.82rem;color:var(--text)">${st.scenario}</div>
+          <div style="font-size:.7rem;color:var(--text3)">${st.description||""}</div>
+          ${st.most_affected?.length?`<div style="font-size:.65rem;color:var(--text3);margin-top:.2rem">Affected: ${st.most_affected.join(", ")}</div>`:""}
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-family:var(--font-mono);font-size:.88rem;color:var(--red)">-${Math.abs(st.estimated_loss_pct||0)}%</div>
+          <div style="font-size:.65rem;color:var(--text3)">${fmt(st.estimated_loss_kes||0)}</div>
+        </div>
+      </div>`).join("")}` : ""}
+
+    ${(health.improvement_suggestions||[]).length ? `
+    <div class="review-sub" style="margin:.8rem 0 .4rem">💡 Suggestions</div>
+    ${health.improvement_suggestions.map(s=>`
+      <div style="font-size:.8rem;color:var(--text2);padding:.25rem 0">→ ${s}</div>`).join("")}` : ""}
+  </div>` : ""}
+
+  <!-- ⑤ DIVIDEND INTELLIGENCE ────────────────────────────────────────── -->
+  ${(dividend.summary||dividend.ytd_received?.length) ? `
+  <div class="panel">
+    <div class="panel-title" style="justify-content:space-between">
+      <span>💰 Dividend Intelligence</span>
+      ${dividend.summary?.portfolio_yield_pct?`<span style="font-family:var(--font-mono);font-size:.7rem;color:var(--text3)">${dividend.summary.portfolio_yield_pct}% yield</span>`:""}
+    </div>
+    ${dividend.summary?.income_commentary?`<p style="font-size:.84rem;color:var(--text2);margin-bottom:.8rem">${dividend.summary.income_commentary}</p>`:""}
+    <!-- 3-KPI strip -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-bottom:1rem">
+      <div class="kpi-card"><div class="kpi-label">Received YTD</div><div class="kpi-val" style="color:var(--green)">${fmt(dividend.summary?.ytd_income_kes||0)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Expected Remaining</div><div class="kpi-val" style="color:var(--gold2)">${fmt(dividend.summary?.expected_remaining_kes||0)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Projected Annual</div><div class="kpi-val">${fmt(dividend.summary?.projected_annual_kes||0)}</div></div>
+    </div>
+    <!-- Received table -->
+    ${(dividend.ytd_received||[]).length ? `
+    <div class="review-sub" style="margin-bottom:.4rem">Received This Year</div>
+    <div class="table-wrap" style="margin-bottom:1rem">
+      <table class="data-table" style="font-size:.76rem">
+        <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Ex-Date</th><th class="num-col">Per Share</th><th class="num-col">Total (Native)</th><th class="num-col">KES</th></tr></thead>
+        <tbody>${dividend.ytd_received.map(d=>`<tr>
+          <td class="wht mo">${d.ticker}</td>
+          <td class="hide-xs"><span class="hc-exchange-badge">${d.exchange||""}</span></td>
+          <td style="font-family:var(--font-mono);font-size:.7rem">${d.ex_date||"—"}</td>
+          <td class="num-col mo">${d.currency||"KES"} ${(+d.amount_per_share||0).toFixed(2)}</td>
+          <td class="num-col mo pos">+${d.currency||"KES"} ${(+(d.total_received||0)).toLocaleString("en-KE")}</td>
+          <td class="num-col" style="color:var(--green)">${fmt(d.total_kes||0)}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>` : `<div style="font-size:.8rem;color:var(--text3);margin-bottom:.8rem">No dividends received yet this year.</div>`}
+    <!-- Expected pills -->
+    ${(dividend.expected_remaining||[]).length ? `
+    <div class="review-sub" style="margin-bottom:.4rem">Expected Remaining (${dividend.expected_remaining.length})</div>
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+      ${dividend.expected_remaining.map(d=>`
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.35rem .6rem;font-size:.72rem">
+          <span style="color:var(--text);font-weight:500">${d.ticker}</span>
+          <span style="color:var(--text3);margin:0 .25rem">·</span>
+          <span style="color:var(--gold2);font-family:var(--font-mono)">${fmt(d.total_kes_expected||0)}</span>
+          <span style="color:var(--text3);font-size:.62rem;margin-left:.25rem">${d.expected_ex_date||""}</span>
+          <span class="${d.confidence==="HIGH"?"badge-ok":d.confidence==="MEDIUM"?"badge-warn":"badge-info"}" style="font-size:.55rem;margin-left:.2rem">${d.confidence||""}</span>
+        </div>`).join("")}
+    </div>` : ""}
+  </div>` : ""}
+
+  <!-- ⑥ ANALYST INTELLIGENCE ─────────────────────────────────────────── -->
+  <div class="review-grid-2">
+    <!-- Per-ticker analyst views -->
+    ${filteredViews.length ? `
+    <div class="panel">
+      <div class="panel-title">🔍 Analyst Intelligence</div>
+      ${filteredViews.slice(0,8).map(a=>`
+        <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.2rem">
+            <span style="font-size:.84rem;color:var(--text);font-weight:500">${a.ticker} <span class="hc-exchange-badge" style="font-size:.62rem">${a.exchange||""}</span></span>
+            <span class="${a.consensus==="BUY"?"badge-ok":a.consensus==="SELL"?"badge-err":"badge-info"}" style="font-size:.62rem">${a.consensus||"—"}</span>
+          </div>
+          ${a.key_thesis?`<div style="font-size:.76rem;color:var(--text2)">${a.key_thesis}</div>`:""}
+          ${a.avg_price_target?`<div style="font-size:.68rem;color:var(--text3);margin-top:.15rem">Target: ${a.avg_price_target} · ${a.upside_pct>0?"↑":"↓"} ${Math.abs(a.upside_pct||0)}% upside</div>`:""}
+        </div>`).join("")}
+    </div>` : ""}
+    <!-- Hot picks -->
+    ${filteredPicks.length ? `
+    <div class="panel">
+      <div class="panel-title">🔥 Hot Picks <small style="font-size:.62rem;color:var(--text3);font-weight:normal">(max 4)</small></div>
+      ${filteredPicks.map(p=>`
+        <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.2rem">
+            <span style="font-size:.84rem;color:var(--gold2);font-weight:500">${p.ticker} <span class="hc-exchange-badge" style="font-size:.62rem">${p.exchange||""}</span></span>
+            <span style="font-size:.68rem;color:var(--text3)">${p.source||""}</span>
+          </div>
+          ${p.thesis?`<div style="font-size:.76rem;color:var(--text2)">${p.thesis}</div>`:""}
+          ${p.catalyst?`<div style="font-size:.68rem;color:var(--text3);margin-top:.15rem">Catalyst: ${p.catalyst}</div>`:""}
+          ${p.price_target?`<div style="font-size:.68rem;color:var(--gold2);font-family:var(--font-mono);margin-top:.1rem">Target: ${p.price_target}</div>`:""}
+        </div>`).join("")}
+    </div>` : ""}
+  </div>
+
+  <!-- ⑦ THEMATIC (with radar inline) ─────────────────────────────────── -->
+  ${(thematic.megatrends?.length||thematic.exposure_radar?.length) ? `
+  <div class="panel">
+    <div class="panel-title">🌐 Thematic Opportunities</div>
+    ${thematic.thematic_summary?`<p style="font-size:.84rem;color:var(--text2);margin-bottom:1rem">${thematic.thematic_summary}</p>`:""}
+    <!-- Exposure radar ONCE -->
+    ${(thematic.exposure_radar||[]).length ? `
+    <div class="review-sub" style="margin-bottom:.5rem">Exposure Radar</div>
+    <div class="thematic-radar" style="margin-bottom:1rem">
+      ${thematic.exposure_radar.map(radarRow).join("")}
+    </div>` : ""}
+    <!-- Megatrend cards -->
+    ${(thematic.megatrends||[]).slice(0,6).map(t=>`
+      <div style="padding:.6rem 0;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.3rem;margin-bottom:.2rem">
+          <span style="font-size:.84rem;color:var(--text);font-weight:500">${t.theme}</span>
+          <div style="display:flex;gap:.3rem;align-items:center">
+            <span class="badge-info" style="font-size:.58rem">${t.horizon||""}</span>
+            <span class="${t.conviction==="HIGH"?"badge-ok":t.conviction==="MEDIUM"?"badge-warn":"badge-info"}" style="font-size:.58rem">${t.conviction||""}</span>
+            ${t.current_exposure?`<span class="${t.current_exposure==="ADEQUATE"?"badge-ok":t.current_exposure==="LOW"?"badge-warn":"badge-info"}" style="font-size:.58rem">${t.current_exposure}</span>`:""}
+          </div>
+        </div>
+        ${t.rationale?`<div style="font-size:.76rem;color:var(--text2)">${t.rationale}</div>`:""}
+        ${t.current_holdings_in_theme?.length?`<div style="font-size:.68rem;color:var(--text3);margin-top:.15rem">Held: ${t.current_holdings_in_theme.join(", ")}</div>`:""}
+      </div>`).join("")}
+    <!-- Africa opportunities -->
+    ${(thematic.africa_specific||[]).length ? `
+    <div class="review-sub" style="margin:.8rem 0 .4rem">🌍 Africa Opportunities</div>
+    ${thematic.africa_specific.slice(0,3).map(a=>`
+      <div style="font-size:.78rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">${a.opportunity}: ${a.rationale}</div>`).join("")}` : ""}
+  </div>` : ""}
+
+  <!-- ⑧ CORPORATE ACTIONS ──────────────────────────────────────────── -->
+  ${(filteredDivs.length||filteredCorp.length) ? `
+  <div class="panel">
+    <div class="panel-title" style="justify-content:space-between">
+      <span>📅 Corporate Actions (Upcoming)</span>
+      <span style="font-family:var(--font-mono);font-size:.65rem;color:var(--text3)">Future-dated only</span>
+    </div>
+    ${filteredDivs.length ? `
+    <div class="review-sub" style="margin-bottom:.4rem">Dividends</div>
+    <div class="table-wrap" style="margin-bottom:.8rem">
+      <table class="data-table" style="font-size:.75rem">
+        <thead><tr><th>Ticker</th><th>Ex-Date</th><th class="num-col">Amount</th><th class="hide-sm">Type</th></tr></thead>
+        <tbody>${filteredDivs.map(d=>`<tr>
+          <td class="wht mo">${d.ticker} <span class="hc-exchange-badge hide-xs" style="font-size:.6rem">${d.exchange||""}</span></td>
+          <td style="font-family:var(--font-mono);font-size:.7rem;color:var(--gold2)">${d.ex_date||"—"}</td>
+          <td class="num-col mo">${d.currency||""} ${d.amount_per_share||"TBA"}</td>
+          <td class="hide-sm">${d.type||"—"}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>` : ""}
+    ${filteredCorp.length ? `
+    ${filteredCorp.slice(0,4).map(a=>`
+      <div style="font-size:.78rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--text);font-weight:500">${a.ticker}</span> · ${a.action_type||a.type||"event"} · <span style="color:var(--gold2)">${a.date||""}</span>
+        ${a.description?` — ${a.description}`:""}
+      </div>`).join("")}` : ""}
+  </div>` : ""}
+
+  <!-- ⑨ WATCHLIST + RISKS + OPPORTUNITIES ─────────────────────────── -->
+  <div class="review-grid-2">
+    ${(summary.watchlist||[]).length ? `
+    <div class="panel">
+      <div class="panel-title">👁 Watchlist</div>
+      ${summary.watchlist.map(w=>`
+        <div style="padding:.4rem 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.84rem;color:var(--text)">${w.ticker} <span class="hc-exchange-badge hide-xs" style="font-size:.6rem">${w.exchange||""}</span></span>
+            ${w.entry_range?`<span style="font-family:var(--font-mono);font-size:.7rem;color:var(--gold2)">${w.entry_range}</span>`:""}
+          </div>
+          <div style="font-size:.74rem;color:var(--text3)">${w.reason||""} ${w.time_horizon?`· ${w.time_horizon}`:""}</div>
+        </div>`).join("")}
+    </div>` : ""}
+    <div class="panel">
+      ${(summary.risks_to_watch||[]).length ? `
+        <div class="panel-title">⚠ Risks to Watch</div>
+        ${summary.risks_to_watch.map(r=>`<div style="font-size:.8rem;color:var(--text2);padding:.25rem 0;border-bottom:1px solid var(--border)">→ ${r}</div>`).join("")}
+        <div style="margin-top:.7rem"></div>` : ""}
+      ${(summary.opportunities||[]).length ? `
+        <div class="panel-title">✦ Opportunities</div>
+        ${summary.opportunities.map(o=>`<div style="font-size:.8rem;color:var(--text2);padding:.25rem 0;border-bottom:1px solid var(--border)">→ ${o}</div>`).join("")}` : ""}
+    </div>
+  </div>
+
+  <!-- ⑩ VERIFICATION FOOTER ──────────────────────────────────────── -->
+  ${verifier.verifier_note ? `
+  <div style="background:rgba(92,158,106,.04);border:1px solid rgba(92,158,106,.2);border-radius:10px;padding:.8rem 1rem;margin-top:.5rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem;margin-bottom:.3rem">
+      <span style="font-size:.75rem;color:var(--green)">✅ ${verifier.passes_completed===2?"2-Pass Verification":"Verification"} Complete</span>
+      ${verifier.overall_confidence?`<span style="font-family:var(--font-mono);font-size:.65rem;color:${rc(verifier.overall_confidence)}">Confidence: ${verifier.overall_confidence}</span>`:""}
+    </div>
+    <div style="font-size:.78rem;color:var(--text2)">${verifier.verifier_note}</div>
+    ${verifier.revised_agents?.length?`<div style="font-size:.65rem;color:var(--gold2);margin-top:.2rem">Revised after first pass: ${verifier.revised_agents.join(", ")}</div>`:""}
+  </div>` : ""}
+
   `;
 
+  /* ── Post-render: update overview badges + investor banner ─────────────── */
+  if (badges.length)    renderPortfolioBadges(badges);
+  if (ip.type)          renderInvestorProfile(ip);
   const dateEl = document.getElementById("review-last-date");
-  if (dateEl) dateEl.textContent = "Last: " + new Date().toLocaleDateString();
+  if (dateEl) dateEl.textContent = "Last: " + new Date().toLocaleDateString("en-KE");
 }
 
 async function loadReview() {
@@ -2207,6 +2186,8 @@ function cancelUpload() {
 
 
 // ── Exchange / Convert assets ────────────────────────────────────────────────
+let _exchangeSavingsData = null; // cached savings for balance hints
+
 function toggleExchange() {
   const f = document.getElementById("exchange-form");
   const c = document.getElementById("exchange-chevron");
@@ -2216,15 +2197,36 @@ function toggleExchange() {
   if (c) c.textContent = open ? "▼" : "▲";
   if (!open) {
     // Populate lot selector
-    const lotSel = document.getElementById("ex-from-lot");
-    if (lotSel && _activeLots?.length) {
-      lotSel.innerHTML = _activeLots.map(l =>
-        `<option value="${l.id}">${l.ticker} (${l.exchange}) · ${l.shares.toLocaleString()} shares</option>`
-      ).join("");
-    }
+    _populateExchangeLots();
     // Set today
     const ed = document.getElementById("ex-date");
     if (ed && !ed.value) ed.value = new Date().toISOString().split("T")[0];
+    // Pre-load savings data for balance hints
+    api("GET", "/api/savings").then(d => {
+      _exchangeSavingsData = d;
+      // Populate the label datalist
+      const dl = document.getElementById("ex-label-list");
+      if (dl && d.entries) {
+        const labels = [...new Set(d.entries.map(e => e.label).filter(Boolean))];
+        dl.innerHTML = labels.map(l => `<option value="${l}">`).join("");
+      }
+    });
+  }
+}
+
+function _populateExchangeLots() {
+  const lotSel = document.getElementById("ex-from-lot");
+  if (!lotSel) return;
+  if (_activeLots?.length) {
+    lotSel.innerHTML = _activeLots.map(l =>
+      `<option value="${l.id}" data-shares="${l.shares}" data-ticker="${l.ticker}"
+               data-exchange="${l.exchange}" data-price="${l.purchase_price}">
+        ${l.ticker} (${l.exchange}) · ${l.shares.toLocaleString("en-KE", {maximumFractionDigits:4})} shares
+      </option>`
+    ).join("");
+    onExchangeLotChange(); // populate hints for default selection
+  } else {
+    lotSel.innerHTML = `<option value="">No active lots found</option>`;
   }
 }
 
@@ -2238,6 +2240,77 @@ function onExchangeToChange() {
   const t = document.getElementById("ex-to-type")?.value;
   document.getElementById("ex-to-savings").style.display = t === "savings" ? "" : "none";
   document.getElementById("ex-to-stocks").style.display  = t === "stocks"  ? "" : "none";
+}
+
+function onExchangeLotChange() {
+  const sel  = document.getElementById("ex-from-lot");
+  const opt  = sel?.selectedOptions?.[0];
+  const avEl = document.getElementById("ex-lot-available");
+  const hint = document.getElementById("ex-proceeds-hint");
+  if (!opt || !opt.value) return;
+
+  const shares = parseFloat(opt.dataset.shares || 0);
+  const ticker = opt.dataset.ticker;
+  const exch   = opt.dataset.exchange;
+
+  if (avEl) avEl.textContent = `Available: ${shares.toLocaleString("en-KE", {maximumFractionDigits:4})} shares`;
+
+  // Auto-fill shares input if empty
+  const sharesInput = document.getElementById("ex-from-shares");
+  if (sharesInput && !sharesInput.value) sharesInput.value = shares;
+
+  onExchangeSharesInput();
+}
+
+function onExchangeSharesInput() {
+  const sel        = document.getElementById("ex-from-lot");
+  const opt        = sel?.selectedOptions?.[0];
+  const sharesIn   = parseFloat(document.getElementById("ex-from-shares")?.value || 0);
+  const amountIn   = document.getElementById("ex-amount");
+  const hint       = document.getElementById("ex-proceeds-hint");
+
+  if (!opt || !sharesIn) return;
+
+  const totalShares = parseFloat(opt.dataset.shares || 0);
+  const isPartial   = sharesIn < totalShares - 0.000001;
+  const pct         = totalShares > 0 ? Math.round(sharesIn / totalShares * 100) : 0;
+
+  if (hint) {
+    hint.textContent = isPartial
+      ? `Partial sale: ${sharesIn.toLocaleString("en-KE",{maximumFractionDigits:4})} of ${totalShares.toLocaleString("en-KE",{maximumFractionDigits:4})} shares (${pct}%) · ${(totalShares-sharesIn).toLocaleString("en-KE",{maximumFractionDigits:4})} shares remain in lot`
+      : `Full sale: entire lot of ${totalShares.toLocaleString("en-KE",{maximumFractionDigits:4})} shares · lot will be closed`;
+    hint.style.color = isPartial ? "var(--gold2)" : "var(--text3)";
+  }
+}
+
+function sellAllShares() {
+  const sel = document.getElementById("ex-from-lot");
+  const opt = sel?.selectedOptions?.[0];
+  if (!opt) return;
+  const inp = document.getElementById("ex-from-shares");
+  if (inp) { inp.value = parseFloat(opt.dataset.shares || 0); onExchangeSharesInput(); }
+}
+
+function onExchangeSavingsChange() {
+  const cls    = document.getElementById("ex-from-class")?.value;
+  const label  = document.getElementById("ex-from-label")?.value?.trim();
+  const hint   = document.getElementById("ex-savings-balance");
+  if (!hint || !_exchangeSavingsData?.entries) return;
+
+  // Filter entries by class and optionally by label
+  const entries = _exchangeSavingsData.entries.filter(e =>
+    (!cls   || e.asset_class === cls) &&
+    (!label || e.label === label)
+  );
+  const bal = entries.reduce((s, e) =>
+    s + (["deposit","interest"].includes(e.type) ? e.amount_kes : -e.amount_kes), 0);
+
+  hint.textContent = bal > 0
+    ? `Available balance: KES ${bal.toLocaleString("en-KE", {minimumFractionDigits:2, maximumFractionDigits:2})}`
+    : label || cls
+      ? `No balance found for ${label || cls}`
+      : "";
+  hint.style.color = bal > 0 ? "var(--green)" : "var(--red)";
 }
 
 async function recordExchange() {
@@ -2255,34 +2328,44 @@ async function recordExchange() {
 
   if (fromType === "savings") {
     payload.from_class = document.getElementById("ex-from-class")?.value;
-    payload.from_label = document.getElementById("ex-from-label")?.value;
+    payload.from_label = document.getElementById("ex-from-label")?.value?.trim();
     if (!payload.from_class) { toast("Select source asset class", "error"); return; }
   } else {
     payload.from_lot_id = parseInt(document.getElementById("ex-from-lot")?.value || "0");
+    const sharesVal     = document.getElementById("ex-from-shares")?.value;
+    if (sharesVal) payload.from_shares = parseFloat(sharesVal);
     if (!payload.from_lot_id) { toast("Select a stock lot", "error"); return; }
+    if (!payload.from_shares || payload.from_shares <= 0) { toast("Enter shares to sell", "error"); return; }
   }
 
   if (toType === "savings") {
     payload.to_class = document.getElementById("ex-to-class")?.value;
-    payload.to_label = document.getElementById("ex-to-label")?.value;
+    payload.to_label = document.getElementById("ex-to-label")?.value?.trim();
     if (!payload.to_class) { toast("Select destination asset class", "error"); return; }
   } else {
     payload.to_ticker   = document.getElementById("ex-to-ticker")?.value?.toUpperCase();
     payload.to_exchange = document.getElementById("ex-to-exchange")?.value;
     payload.to_shares   = parseFloat(document.getElementById("ex-to-shares")?.value || "0");
-    if (!payload.to_ticker)  { toast("Enter a ticker", "error"); return; }
-    if (!payload.to_shares)  { toast("Enter shares bought", "error"); return; }
+    if (!payload.to_ticker)  { toast("Enter a ticker",        "error"); return; }
+    if (!payload.to_shares)  { toast("Enter shares bought",   "error"); return; }
   }
 
   const r = await api("POST", "/api/savings/exchange", payload);
   if (r.error) { toast(r.error, "error"); return; }
 
-  toast("Exchange recorded ✓");
+  // Show each action in the toast
+  toast(`✓ ${(r.actions||[]).join(" · ")}`);
+
   clearCache("/api/savings"); clearCache("/api/stocks"); clearCache("/api/investments");
-  loadSavings(); loadStocks(); loadActiveLots();
-  // Reset form
-  document.getElementById("ex-amount").value = "";
-  document.getElementById("ex-note").value   = "";
-  toggleExchange(); // close panel
+  clearCache("/api/stocks/lots");
+  loadAll();   // reload everything
+
+  // Reset form fields
+  ["ex-amount","ex-from-shares","ex-to-shares","ex-note"].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = "";
+  });
+  const hint = document.getElementById("ex-proceeds-hint"); if (hint) hint.textContent = "";
+  const bh   = document.getElementById("ex-savings-balance"); if (bh) bh.textContent = "";
+  toggleExchange(); // collapse panel
 }
 

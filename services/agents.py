@@ -1028,6 +1028,99 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         state[agent_id]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
 
+    # ── Batched dividend runner (handles 30+ tickers via chunking) ──────────
+    BATCH_SIZE = 10  # Gemini handles ~10 tickers well per call
+
+    def _run_dividend_batched():
+        """Run dividend agent in batches of BATCH_SIZE tickers, merge results."""
+        holdings = portfolio.get("holdings", [])
+        active   = [h for h in holdings if (h.get("total_shares") or 0) > 0]
+
+        if not active:
+            state["dividend"]["status"] = "done"
+            state["dividend"]["result"] = {
+                "ytd_received": [], "expected_remaining": [],
+                "non_dividend_holdings": [],
+                "summary": {"ytd_income_kes":0,"expected_remaining_kes":0,
+                            "projected_annual_kes":0,"portfolio_yield_pct":0,
+                            "income_commentary":"No active holdings."}
+            }
+            _save_job(job_id, user_id, state)
+            return
+
+        state["dividend"]["status"]  = "running"
+        state["dividend"]["started"] = datetime.utcnow().isoformat()
+        _save_job(job_id, user_id, state)
+
+        # Split into batches
+        batches = [active[i:i+BATCH_SIZE] for i in range(0, len(active), BATCH_SIZE)]
+
+        all_ytd, all_expected, all_non_div = [], [], []
+        merged_summary = {
+            "ytd_income_kes":0,"expected_remaining_kes":0,
+            "projected_annual_kes":0,"portfolio_yield_pct":0,
+            "top_income_ticker":"","dividend_growth_trend":"MIXED",
+            "income_commentary":""
+        }
+
+        batch_sem = threading.Semaphore(4)  # max 4 concurrent batch calls
+
+        results  = [None] * len(batches)
+        errors   = []
+
+        def fetch_batch(i, batch):
+            with batch_sem:
+                # Build a mini-portfolio for this batch
+                mini_port = {**portfolio, "holdings": batch}
+                try:
+                    prompt = _prompt_dividend(ctx, mini_port, savings)
+                    text   = _gemini(api_key, prompt, timeout=90)
+                    result = _extract_json(text)
+                    results[i] = result
+                except Exception as e:
+                    errors.append(f"batch {i}: {e}")
+
+        batch_threads = [
+            threading.Thread(target=fetch_batch, args=(i, batch), daemon=True)
+            for i, batch in enumerate(batches)
+        ]
+        for t in batch_threads: t.start()
+        for t in batch_threads: t.join(timeout=120)
+
+        # Merge all batch results
+        for r in results:
+            if not r: continue
+            all_ytd.extend(r.get("ytd_received") or [])
+            all_expected.extend(r.get("expected_remaining") or [])
+            all_non_div.extend(r.get("non_dividend_holdings") or [])
+            s = r.get("summary") or {}
+            merged_summary["ytd_income_kes"]       += s.get("ytd_income_kes",0) or 0
+            merged_summary["expected_remaining_kes"]+= s.get("expected_remaining_kes",0) or 0
+            merged_summary["projected_annual_kes"] += s.get("projected_annual_kes",0) or 0
+            if s.get("income_commentary"):
+                merged_summary["income_commentary"] = s["income_commentary"]
+            if s.get("top_income_ticker"):
+                merged_summary["top_income_ticker"] = s["top_income_ticker"]
+
+        # Calculate yield from merged totals
+        total_mkt = portfolio.get("total_market",0) or 1
+        merged_summary["portfolio_yield_pct"] = round(
+            merged_summary["projected_annual_kes"] / total_mkt * 100, 2)
+        if not merged_summary["income_commentary"]:
+            merged_summary["income_commentary"] = (
+                f"Analysed {len(active)} tickers in {len(batches)} batch(es). "
+                f"Projected annual income: KES {merged_summary['projected_annual_kes']:,.0f}.")
+
+        state["dividend"]["status"]  = "done"
+        state["dividend"]["result"]  = {
+            "ytd_received":          all_ytd,
+            "expected_remaining":    all_expected,
+            "non_dividend_holdings": list(set(all_non_div)),
+            "summary":               merged_summary,
+        }
+        state["dividend"]["finished"] = datetime.utcnow().isoformat()
+        _save_job(job_id, user_id, state)
+
     # ── Agents 1-7 in parallel ────────────────────────────────────────────────
     # Analyst runs per-ticker in sub-threads (multithreaded)
     def run_analyst_multithreaded():
@@ -1107,7 +1200,7 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         threading.Thread(target=run_analyst_multithreaded, args=()),
         threading.Thread(target=run_agent,                 args=("thematic",    _prompt_thematic,    ctx)),
         threading.Thread(target=run_agent,                 args=("corporate",   _prompt_corporate, tickers_str)),
-        threading.Thread(target=run_agent,                 args=("dividend",    _prompt_dividend,    ctx, portfolio, savings)),
+        threading.Thread(target=_run_dividend_batched,      args=()),
         threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio, savings)),
     ]
     for t in threads: t.daemon = True; t.start()
