@@ -1655,24 +1655,62 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
       ${thematic.exposure_radar.map(radarRow).join("")}
     </div>` : ""}
     <!-- Megatrend cards -->
-    ${(thematic.megatrends||[]).slice(0,6).map(t=>`
-      <div style="padding:.6rem 0;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.3rem;margin-bottom:.2rem">
-          <span style="font-size:.84rem;color:var(--text);font-weight:500">${t.theme}</span>
-          <div style="display:flex;gap:.3rem;align-items:center">
-            <span class="badge-info" style="font-size:.58rem">${t.horizon||""}</span>
-            <span class="${t.conviction==="HIGH"?"badge-ok":t.conviction==="MEDIUM"?"badge-warn":"badge-info"}" style="font-size:.58rem">${t.conviction||""}</span>
-            ${t.current_exposure?`<span class="${t.current_exposure==="ADEQUATE"?"badge-ok":t.current_exposure==="LOW"?"badge-warn":"badge-info"}" style="font-size:.58rem">${t.current_exposure}</span>`:""}
+    ${(thematic.megatrends||[]).slice(0,8).map(t=>`
+      <div style="padding:.7rem 0;border-top:1px solid var(--border)">
+        <!-- Theme header -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.3rem;margin-bottom:.3rem">
+          <span style="font-size:.86rem;color:var(--text);font-weight:500">${t.theme}</span>
+          <div style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">
+            <span class="badge-info" style="font-size:.56rem">${t.horizon||""}</span>
+            <span class="${t.conviction==="HIGH"?"badge-ok":t.conviction==="MEDIUM"?"badge-warn":"badge-info"}" style="font-size:.56rem">${t.conviction||""}</span>
+            ${t.current_exposure?`<span class="${t.current_exposure==="ADEQUATE"?"badge-ok":t.current_exposure==="NONE"||t.current_exposure==="LOW"?"badge-warn":"badge-info"}" style="font-size:.56rem">${t.current_exposure}</span>`:""}
+            ${t.current_exposure_pct?`<span style="font-family:var(--font-mono);font-size:.58rem;color:var(--text3)">${t.current_exposure_pct}%</span>`:""}
           </div>
         </div>
-        ${t.rationale?`<div style="font-size:.76rem;color:var(--text2)">${t.rationale}</div>`:""}
-        ${t.current_holdings_in_theme?.length?`<div style="font-size:.68rem;color:var(--text3);margin-top:.15rem">Held: ${t.current_holdings_in_theme.join(", ")}</div>`:""}
+        ${t.rationale?`<div style="font-size:.78rem;color:var(--text2);margin-bottom:.3rem">${t.rationale}</div>`:""}
+        ${t.exposure_commentary?`<div style="font-size:.7rem;color:var(--text3);font-style:italic;margin-bottom:.3rem">${t.exposure_commentary}</div>`:""}
+        ${t.current_holdings_in_theme?.length?`<div style="font-size:.68rem;color:var(--text3);margin-bottom:.35rem">Currently held: ${t.current_holdings_in_theme.join(", ")}</div>`:""}
+
+        <!-- Recommended ETFs for this theme -->
+        ${(t.recommended_etfs||[]).length ? `
+        <div style="margin-top:.3rem">
+          <div style="font-size:.62rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem">Recommended ETFs</div>
+          <div style="display:flex;flex-direction:column;gap:.3rem">
+            ${(t.recommended_etfs||[]).slice(0,3).map(e=>`
+              <div style="display:flex;align-items:flex-start;gap:.5rem;padding:.35rem .5rem;
+                          background:var(--bg3);border:1px solid var(--border);border-radius:8px">
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+                    <span style="font-family:var(--font-mono);font-size:.78rem;color:var(--gold2);font-weight:500">${e.ticker}</span>
+                    <span class="hc-exchange-badge" style="font-size:.58rem">${e.exchange||""}</span>
+                    ${e.ter_pct?`<span style="font-size:.62rem;color:var(--text3)">TER ${e.ter_pct}%</span>`:""}
+                    ${e.aum_usd_bn?`<span style="font-size:.62rem;color:var(--text3)">AUM $${e.aum_usd_bn}bn</span>`:""}
+                    ${e.kenya_accessible===true?`<span style="font-size:.58rem;color:var(--green)">✓ KE accessible</span>`:e.kenya_accessible===false?`<span style="font-size:.58rem;color:var(--text3)">✗ Not via KE brokers</span>`:""}
+                  </div>
+                  ${e.name?`<div style="font-size:.7rem;color:var(--text2)">${e.name}</div>`:""}
+                  ${e.why?`<div style="font-size:.68rem;color:var(--text3)">${e.why}</div>`:""}
+                </div>
+              </div>`).join("")}
+          </div>
+        </div>` : ""}
       </div>`).join("")}
+
     <!-- Africa opportunities -->
     ${(thematic.africa_specific||[]).length ? `
-    <div class="review-sub" style="margin:.8rem 0 .4rem">🌍 Africa Opportunities</div>
-    ${thematic.africa_specific.slice(0,3).map(a=>`
-      <div style="font-size:.78rem;color:var(--text2);padding:.3rem 0;border-bottom:1px solid var(--border)">${a.opportunity}: ${a.rationale}</div>`).join("")}` : ""}
+    <div class="review-sub" style="margin:.9rem 0 .4rem">🌍 Africa Opportunities</div>
+    ${thematic.africa_specific.slice(0,4).map(a=>`
+      <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+        <div style="font-size:.82rem;color:var(--text);font-weight:500;margin-bottom:.2rem">${a.opportunity}</div>
+        <div style="font-size:.76rem;color:var(--text2);margin-bottom:.3rem">${a.rationale}</div>
+        ${(a.recommended_etfs||[]).length ? `
+          <div style="display:flex;flex-wrap:wrap;gap:.3rem">
+            ${a.recommended_etfs.slice(0,2).map(e=>`
+              <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.25rem .5rem;font-size:.7rem">
+                <span style="font-family:var(--font-mono);color:var(--gold2)">${e.ticker}</span>
+                ${e.name?` · <span style="color:var(--text2)">${e.name}</span>`:""}
+              </div>`).join("")}
+          </div>` : ""}
+      </div>`).join("")}` : ""}
   </div>` : ""}
 
   <!-- ⑧ CORPORATE ACTIONS ──────────────────────────────────────────── -->

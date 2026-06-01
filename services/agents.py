@@ -354,11 +354,28 @@ Return ONLY valid JSON (no markdown, no code fences):
       "target_allocation_pct": 0,
       "instruments": [
         {{"ticker":"","exchange":"","type":"stock|etf","why":"","entry_note":""}}
+      ],
+      "recommended_etfs": [
+        {{
+          "ticker":   "",
+          "exchange": "NYSE|NASDAQ|LSE|JSE",
+          "name":     "Full ETF name",
+          "ter_pct":  0,
+          "aum_usd_bn":0,
+          "why":      "why this ETF gives best exposure to this theme",
+          "kenya_accessible": true
+        }}
       ]
     }}
   ],
   "africa_specific": [
-    {{"opportunity":"","rationale":"","current_exposure":"NONE|LOW|ADEQUATE|HIGH","instruments":[{{"ticker":"","exchange":"","note":""}}]}}
+    {{
+      "opportunity":"",
+      "rationale":"",
+      "current_exposure":"NONE|LOW|ADEQUATE|HIGH",
+      "instruments":[{{"ticker":"","exchange":"","note":""}}],
+      "recommended_etfs":[{{"ticker":"","exchange":"","name":"","why":""}}]
+    }}
   ],
   "exposure_radar": [
     {{"theme":"","current_pct":0,"target_pct":0,"status":"OVERWEIGHT|ON_TARGET|UNDERWEIGHT|MISSING"}}
@@ -741,32 +758,47 @@ BADGE CRITERIA:
 """
 
 
-def _prompt_analyst_multithreaded(ticker, exchange, portfolio_context):
-    """Per-ticker analyst prompt for multithreaded execution."""
+def _prompt_analyst_batch(tickers_batch):
+    """Batch analyst prompt - analyses up to 5 tickers in one Gemini call.
+    Returns an array of analysis objects, one per ticker.
+    This reduces API calls from N to N/5 for large portfolios.
+    """
     today = datetime.today().strftime("%Y-%m-%d")
-    return f"""You are a senior equity analyst. Today is {today}.
-
-Analyse {ticker} ({exchange}) using MULTIPLE sources to avoid bias.
-Poll: Goldman Sachs, Morgan Stanley, JPMorgan, UBS, Citi, BofA, Morningstar, CFRA, Bloomberg Intelligence.
-For African stocks also check: Rand Merchant Bank, Stanbic, AIB-AXYS, CBA Securities.
-
-Return ONLY valid JSON (no markdown):
-{{
-  "ticker":          "{ticker}",
-  "exchange":        "{exchange}",
-  "consensus":       "BUY|HOLD|SELL|MIXED",
-  "sources_count":   0,
-  "sources_list":    [],
-  "avg_price_target":"",
-  "upside_pct":      0,
-  "key_thesis":      "specific investment thesis or null if not found",
-  "bull_case":       "",
-  "bear_case":       "",
-  "recent_changes":  [{{"analyst":"","institution":"","action":"UPGRADE|DOWNGRADE|INITIATE","date":"","target":""}}],
-  "data_freshness":  "days since most recent note",
-  "skip":            false
-}}
-If you cannot find substantive analyst coverage from at least 2 sources, set skip=true."""
+    ticker_list = chr(10).join(
+        f"  - {t['ticker']} ({t['exchange']})" for t in tickers_batch
+    )
+    n = len(tickers_batch)
+    return (
+        "You are a senior equity analyst. Today is " + today + "." + chr(10) +
+        chr(10) +
+        "Analyse ALL " + str(n) + " tickers below using MULTIPLE sources." + chr(10) +
+        "Sources: Goldman Sachs, Morgan Stanley, JPMorgan, UBS, Citi, BofA, Morningstar, CFRA, Bloomberg." + chr(10) +
+        "For African stocks also check: Rand Merchant Bank, Stanbic, AIB-AXYS, CBA Securities." + chr(10) +
+        chr(10) +
+        "TICKERS TO ANALYSE:" + chr(10) +
+        ticker_list + chr(10) +
+        chr(10) +
+        "Return ONLY valid JSON array (no markdown, no code fences):" + chr(10) +
+        '[' + chr(10) +
+        '  {' + chr(10) +
+        '    "ticker": "",' + chr(10) +
+        '    "exchange": "",' + chr(10) +
+        '    "consensus": "BUY|HOLD|SELL|MIXED",' + chr(10) +
+        '    "sources_count": 0,' + chr(10) +
+        '    "sources_list": [],' + chr(10) +
+        '    "avg_price_target": "",' + chr(10) +
+        '    "upside_pct": 0,' + chr(10) +
+        '    "key_thesis": "specific investment thesis — required",' + chr(10) +
+        '    "bull_case": "",' + chr(10) +
+        '    "bear_case": "",' + chr(10) +
+        '    "recent_changes": [{"analyst":"","institution":"","action":"UPGRADE|DOWNGRADE|INITIATE","date":"","target":""}],' + chr(10) +
+        '    "data_freshness": "e.g. 3 days ago",' + chr(10) +
+        '    "skip": false' + chr(10) +
+        '  }' + chr(10) +
+        ']' + chr(10) +
+        'Return EXACTLY ' + str(n) + ' objects in the array, one per ticker, in the same order.' + chr(10) +
+        'Set skip=true for any ticker where you cannot find coverage from at least 2 sources.'
+    )
 
 
 def _prompt_verifier(agent_results):
@@ -1124,43 +1156,63 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     # ── Agents 1-7 in parallel ────────────────────────────────────────────────
     # Analyst runs per-ticker in sub-threads (multithreaded)
     def run_analyst_multithreaded():
-        """Run one Gemini call per holding in parallel, merge results."""
+        """Batch analyst: 5 tickers per Gemini call, parallel batch threads.
+        30 tickers = 6 calls (vs 30 before). Respects 15 RPM rate limit."""
         holdings = portfolio.get("holdings", [])
         if not holdings:
             state["analyst"]["status"] = "done"
-            state["analyst"]["result"] = {"analyst_views":[],"hot_picks":[],"sector_sentiment":[],"market_context":"No holdings."}
+            state["analyst"]["result"] = {
+                "analyst_views":[],"hot_picks":[],
+                "sector_sentiment":[],"market_context":"No holdings."}
             _save_job(job_id, user_id, state)
             return
 
         state["analyst"]["status"] = "running"
         _save_job(job_id, user_id, state)
 
-        per_ticker_results = {}
-        lock = threading.Lock()
-        # Gemini free tier: 15 RPM. Semaphore limits concurrent calls to 8
-        # so all finish within ~1 minute without hitting the rate limit.
-        _rate_sem = threading.Semaphore(8)
+        ANALYST_BATCH = 5         # tickers per Gemini call
+        MAX_CONCURRENT = 4        # max concurrent batch calls (rate limit guard)
 
-        def fetch_one(h):
-            ticker = h["ticker"]
-            exch   = h["exchange"]
-            with _rate_sem:
-                try:
-                    prompt = _prompt_analyst_multithreaded(ticker, exch, ctx)
-                    text   = _gemini(api_key, prompt, timeout=60)
-                    result = _extract_json(text)
-                    if not result.get("skip", False) and result.get("key_thesis"):
-                        with lock:
-                            per_ticker_results[ticker] = result
-                except Exception:
-                    pass  # Skip tickers where Gemini fails or rate-limits
+        # Deduplicate holdings by ticker+exchange
+        seen = set()
+        unique_holdings = []
+        for h in holdings:
+            k = (h["ticker"], h.get("exchange","NSE"))
+            if k not in seen:
+                seen.add(k); unique_holdings.append(h)
 
-        ticker_threads = [
-            threading.Thread(target=fetch_one, args=(h,), daemon=True)
-            for h in holdings
+        batches = [
+            unique_holdings[i:i+ANALYST_BATCH]
+            for i in range(0, len(unique_holdings), ANALYST_BATCH)
         ]
-        for t in ticker_threads: t.start()
-        for t in ticker_threads: t.join(timeout=75)
+
+        per_ticker_results = {}
+        lock    = threading.Lock()
+        bat_sem = threading.Semaphore(MAX_CONCURRENT)
+
+        def fetch_batch(batch):
+            with bat_sem:
+                try:
+                    prompt  = _prompt_analyst_batch(batch)
+                    text    = _gemini(api_key, prompt, timeout=90)
+                    # Response is a JSON array
+                    raw     = _extract_json(text)
+                    results = raw if isinstance(raw, list) else raw.get("results", [raw])
+                    for r in results:
+                        if isinstance(r, dict) and not r.get("skip") and r.get("key_thesis"):
+                            ticker = (r.get("ticker") or "").upper()
+                            if ticker:
+                                with lock:
+                                    per_ticker_results[ticker] = r
+                except Exception:
+                    pass  # Skip failed batches; remaining batches still run
+
+        batch_threads = [
+            threading.Thread(target=fetch_batch, args=(b,), daemon=True)
+            for b in batches
+        ]
+        for t in batch_threads: t.start()
+        for t in batch_threads: t.join(timeout=120)
 
         # Merge per-ticker results into analyst format
         analyst_views = list(per_ticker_results.values())
