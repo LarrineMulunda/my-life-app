@@ -1280,12 +1280,14 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
       <td class="hide-sm" style="color:var(--text2)">${w.time_horizon||"—"}</td>
     </tr>`).join("");
 
-  // Use verifier high_confidence_only filter where available
+  // Agent result variables — all 9 agents
   const perf     = agents.performance?.result  || {};
   const reb      = agents.rebalancing?.result  || {};
   const analyst  = agents.analyst?.result      || {};
   const thematic = agents.thematic?.result     || {};
   const corp     = agents.corporate?.result    || {};
+  const dividend = agents.dividend?.result     || {};
+  const health   = agents.health?.result       || {};
   const verifier = agents.verifier?.result     || {};
 
   // High-confidence ticker lists from verifier
