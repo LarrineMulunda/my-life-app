@@ -420,16 +420,37 @@ def _build_user_portfolio(user_id):
     }
 
 def _get_user_savings(user_id):
+    """Returns rich savings dict matching gen_review format: {totals, entries}."""
+    from db import fx_get_all
     conn = get_db()
     try:
-        rows = _fetchall(conn, f"""
-            SELECT asset_class,
-                   SUM(CASE WHEN type='deposit' THEN amount ELSE -amount END) as v
-            FROM savings WHERE user_id={ph()}
-            GROUP BY asset_class""", (user_id,))
-        return {r["asset_class"]: float(r["v"]) for r in rows if r.get("v")}
+        rows = _fetchall(conn,
+            f"SELECT label,asset_class,type,amount,currency,date,note "
+            f"FROM savings WHERE user_id={ph()} ORDER BY asset_class,date",
+            (user_id,))
     finally:
         conn.close()
+
+    fx_rates  = fx_get_all()
+    sav_totals, sav_entries = {}, []
+    for r in rows:
+        cur  = r.get("currency") or "KES"
+        sign = 1 if r["type"] in ("deposit","interest") else -1
+        rate = fx_rates.get(cur, 1.0)
+        v    = float(r["amount"]) * rate * sign
+        cls  = r["asset_class"]
+        sav_totals[cls] = sav_totals.get(cls, 0) + v
+        sav_entries.append({
+            "label":       r["label"] or "",
+            "asset_class": cls,
+            "type":        r["type"],
+            "amount":      float(r["amount"]),
+            "currency":    cur,
+            "amount_kes":  round(v, 2),
+            "date":        str(r.get("date","")) if r.get("date") else "",
+            "note":        r.get("note","") or "",
+        })
+    return {"totals": sav_totals, "entries": sav_entries}
 
 def _generate_user_review(user_id, api_key):
     """Build portfolio context and call Gemini review for one user."""

@@ -8,8 +8,21 @@
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/static/css/style.css"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <!-- Prefetch other pages so they're ready before click -->
+  <link rel="prefetch" href="/investments"/>
+  <link rel="prefetch" href="/subscriptions"/>
+  <link rel="prefetch" href="/habits"/>
+  <link rel="prefetch" href="/goals"/>
+  <style>
+    /* Top loading bar */
+    #nav-bar{position:fixed;top:0;left:0;width:0;height:2px;background:var(--gold);
+             z-index:9999;transition:width .2s ease,opacity .3s ease;opacity:0}
+    #nav-bar.loading{opacity:1;animation:navpulse 1s ease infinite alternate}
+    @keyframes navpulse{from{background:var(--gold)}to{background:var(--gold2)}}
+  </style>
 </head>
 <body>
+<div id="nav-bar"></div>
   <nav class="nav">
     <a href="/" class="nav-brand">✦ my life</a>
     <div class="nav-links">
@@ -30,5 +43,88 @@
   <div id="toast"></div>
   <script src="/static/js/app.js"></script>
   {% block scripts %}{% endblock %}
+<script>
+(function() {
+  const bar     = document.getElementById('nav-bar');
+  const SPA_PAGES = ['/investments','/subscriptions','/habits','/goals'];
+  let _loading  = false;
+
+  function showBar(pct) {
+    bar.style.width = pct + '%';
+    bar.classList.add('loading');
+  }
+  function hideBar() {
+    bar.style.width = '100%';
+    bar.classList.remove('loading');
+    bar.style.transition = 'width .1s,opacity .4s';
+    setTimeout(() => { bar.style.opacity = '0'; bar.style.width = '0'; }, 400);
+  }
+
+  async function navigate(href) {
+    if (_loading) return;
+    _loading = true;
+    showBar(30);
+
+    try {
+      const res  = await fetch(href + '?partial=1');
+      showBar(70);
+      const data = await res.json();
+
+      // Swap main content
+      const main = document.querySelector('main') || document.querySelector('.page-header')?.parentElement;
+      if (main && data.content) {
+        main.innerHTML = data.content;
+      }
+      showBar(90);
+
+      // Update nav active state
+      document.querySelectorAll('.nav-link').forEach(a => {
+        a.classList.toggle('active', new URL(a.href).pathname === href);
+      });
+
+      // Update browser history
+      history.pushState({href}, '', href);
+
+      // Re-run page init scripts
+      if (data.scripts) {
+        const s = document.createElement('script');
+        s.textContent = data.scripts;
+        document.body.appendChild(s);
+      }
+
+      hideBar();
+    } catch(e) {
+      // Fall back to full navigation on any error
+      window.location.href = href;
+    } finally {
+      _loading = false;
+    }
+  }
+
+  // Intercept nav link clicks
+  document.addEventListener('click', function(e) {
+    const a = e.target.closest('a.nav-link');
+    if (!a) return;
+    const href = new URL(a.href).pathname;
+    if (!SPA_PAGES.includes(href)) return;
+    if (href === window.location.pathname) return; // already here
+    e.preventDefault();
+    navigate(href);
+  });
+
+  // Handle browser back/forward
+  window.addEventListener('popstate', function(e) {
+    if (e.state?.href) navigate(e.state.href);
+  });
+
+  // Show bar on first click even before fetch starts
+  document.addEventListener('mousedown', function(e) {
+    const a = e.target.closest('a.nav-link');
+    if (!a) return;
+    const href = new URL(a.href).pathname;
+    if (SPA_PAGES.includes(href) && href !== window.location.pathname) showBar(10);
+  });
+})();
+</script>
 </body>
 </html>

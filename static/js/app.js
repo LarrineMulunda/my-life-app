@@ -69,11 +69,30 @@ async function loadAll() {
   if (d && d.ok) {
     // Pre-populate cache so individual load functions return instantly
     const now = Date.now();
-    if (d.stocks)   _cache["/api/stocks"]                  = {data: d.stocks,   ts: now};
-    if (d.overview) _cache["/api/investments/overview"]    = {data: d.overview, ts: now};
-    if (d.savings)  _cache["/api/savings"]                 = {data: d.savings,  ts: now};
-    if (d.fx_rates) _cache["/api/fx-rates"]                = {data: {rates: d.fx_rates, as_of: "today"}, ts: now};
-    if (d.lots)     _cache["/api/stocks/lots"]             = {data: {lots: d.lots},      ts: now};
+    if (d.stocks)   _cache["/api/stocks"]               = {data: d.stocks, ts: now};
+    if (d.overview) _cache["/api/investments/overview"]  = {data: d.overview, ts: now};
+    if (d.lots)     _cache["/api/stocks/lots"]           = {data: {lots: d.lots}, ts: now};
+    // Reconstruct savings response to match /api/savings exact structure
+    if (d.savings && Array.isArray(d.savings)) {
+      const totals = {}, fxr = d.fx_rates || {};
+      let net = 0;
+      d.savings.forEach(e => {
+        const sign = ["deposit","interest"].includes(e.type) ? 1 : -1;
+        const v = (e.amount_kes != null ? e.amount_kes : e.amount) * sign;
+        totals[e.asset_class] = (totals[e.asset_class]||0) + v;
+        net += v;
+      });
+      _cache["/api/savings"] = {data:{
+        entries: d.savings,
+        totals_by_class: totals,
+        net_total: Math.round(net * 100) / 100,
+        fx_rates: fxr,
+      }, ts: now};
+    }
+    // Reconstruct fx-rates response to match /api/fx-rates exact structure
+    if (d.fx_rates) {
+      _cache["/api/fx-rates"] = {data:{rates: d.fx_rates, as_of: "today"}, ts: now};
+    }
   }
   // Now call individual functions — they read from cache (instant) or fetch if cache miss
   await Promise.all([
@@ -1340,42 +1359,50 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
       ${summary.kes_impact_note ? `<div class="review-fx-note">💱 ${summary.kes_impact_note}</div>` : ""}
     </div>
 
-    <!-- Investor Profile (from health + summary agents) -->
-    ${(health.investor_profile || summary.investor_profile) ? (() => {
-      const ip = health.investor_profile || summary.investor_profile;
+    <!-- Investor Profile + Portfolio Badges -->
+    ${(() => {
+      const ip     = health.investor_profile || summary.investor_profile || {};
+      const badges = (health.portfolio_badges||summary.portfolio_badges||[]).filter(b => b.awarded !== false && b.badge);
+      if (!ip.type && !badges.length) return "";
+
       const RISK_COLOR = {CONSERVATIVE:"var(--green)",MODERATE:"var(--gold)",AGGRESSIVE:"var(--red)"};
       const ICONS = {"Growth Investor":"🚀","Income Investor":"💰","Value Investor":"🔍",
         "Balanced Investor":"⚖️","Speculative Trader":"⚡","Africa-Focused Investor":"🌍",
         "Conservative Saver":"🛡️","Thematic Investor":"🌐"};
       const rc = RISK_COLOR[ip.risk_appetite] || "var(--gold)";
+
       return `<div class="panel">
-        <div class="panel-title">🧬 Investor Profile</div>
-        <div style="display:flex;align-items:flex-start;gap:1.1rem;flex-wrap:wrap">
-          <div style="font-size:2.4rem;flex-shrink:0">${ICONS[ip.type]||"📊"}</div>
+        ${ip.type ? `
+        <div style="display:flex;align-items:flex-start;gap:1rem;flex-wrap:wrap;margin-bottom:${badges.length?"1rem":"0"}">
+          <div style="font-size:2.2rem;flex-shrink:0">${ICONS[ip.type]||"📊"}</div>
           <div style="flex:1;min-width:0">
-            <div style="font-family:var(--font-serif);font-size:1.15rem;font-weight:300;color:var(--text)">${ip.type}</div>
-            ${ip.sub_type ? `<div style="font-family:var(--font-mono);font-size:.68rem;color:var(--gold2);margin:.2rem 0">${ip.sub_type}</div>` : ""}
-            ${ip.description ? `<p style="font-size:.84rem;color:var(--text2);margin:.5rem 0">${ip.description}</p>` : ""}
-            <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
-              <span class="investor-pill" style="border-color:${rc};color:${rc}">${ip.risk_appetite||"—"}</span>
-              <span class="investor-pill">${ip.time_horizon||"—"}</span>
-              <span class="investor-pill">${ip.primary_goal||"—"}</span>
+            <div style="font-family:var(--font-serif);font-size:1.1rem;color:var(--text)">${ip.type}</div>
+            ${ip.sub_type?`<div style="font-family:var(--font-mono);font-size:.65rem;color:var(--gold2);margin:.15rem 0">${ip.sub_type}</div>`:""}
+            ${ip.description?`<p style="font-size:.82rem;color:var(--text2);margin:.4rem 0 .6rem">${ip.description}</p>`:""}
+            <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+              ${ip.risk_appetite?`<span class="investor-pill" style="border-color:${rc};color:${rc}">${ip.risk_appetite}</span>`:""}
+              ${ip.time_horizon?`<span class="investor-pill">${ip.time_horizon}</span>`:""}
+              ${ip.primary_goal?`<span class="investor-pill">${ip.primary_goal}</span>`:""}
             </div>
-            ${(ip.strengths?.length||ip.gaps?.length) ? `
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-top:.9rem">
-                ${ip.strengths?.length ? `<div>
-                  <div class="review-sub" style="color:var(--green);margin-bottom:.3rem">Strengths</div>
-                  ${ip.strengths.map(s=>`<div style="font-size:.78rem;color:var(--text2);padding:.2rem 0">✦ ${s}</div>`).join("")}
-                </div>` : ""}
-                ${ip.gaps?.length ? `<div>
-                  <div class="review-sub" style="color:var(--gold2);margin-bottom:.3rem">Develop</div>
-                  ${ip.gaps.map(g=>`<div style="font-size:.78rem;color:var(--text2);padding:.2rem 0">→ ${g}</div>`).join("")}
-                </div>` : ""}
-              </div>` : ""}
           </div>
+        </div>` : ""}
+
+        ${badges.length ? `
+        <div class="panel-title" style="${ip.type?"border-top:1px solid var(--border);padding-top:.8rem;margin-top:.2rem":""}">
+          🏆 Portfolio Badges
         </div>
+        <div style="display:flex;flex-wrap:wrap;gap:.6rem;padding:.3rem 0">
+          ${badges.map(b => `
+            <div class="badge-card">
+              <span class="badge-big-icon">${badgeIcon(b)}</span>
+              <div>
+                <div style="font-size:.84rem;color:var(--text);font-weight:500">${b.badge}</div>
+                <div style="font-size:.7rem;color:var(--text3)">${b.description||""}</div>
+              </div>
+            </div>`).join("")}
+        </div>` : ""}
       </div>`;
-    })() : ""}
+    })()}
 
     <!-- Top 3 Actions -->
     ${actions ? `<div class="panel">
@@ -1524,47 +1551,76 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
       </div>
     </div>` : ""}
 
-    <!-- Dividend Intelligence (from dedicated agent) -->
+    <!-- Dividend Intelligence -->
     ${(dividend.summary || dividend.ytd_received?.length) ? `
     <div class="panel">
       <div class="panel-title" style="justify-content:space-between">
-        <span>💰 Dividend Intelligence ${dividend.summary ? "<small style='font-size:.65rem;color:var(--text3)'>(full year analysis)</small>" : ""}</span>
-        ${dividend.summary ? `<span style="font-family:var(--font-mono);font-size:.78rem;color:var(--gold2)">KES ${fmt(dividend.summary.projected_annual_kes||0)}/yr · ${dividend.summary.portfolio_yield_pct||0}% yield</span>` : ""}
+        <span>💰 Dividend Intelligence</span>
+        <span style="font-family:var(--font-mono);font-size:.72rem;color:var(--text3)">
+          ${dividend.summary?.portfolio_yield_pct||0}% portfolio yield
+        </span>
       </div>
       ${dividend.summary?.income_commentary ? `<p style="font-size:.84rem;color:var(--text2);margin-bottom:.8rem">${dividend.summary.income_commentary}</p>` : ""}
-      <div class="review-grid-2" style="margin-bottom:1rem">
-        <div class="kpi-card"><div class="kpi-label">Received YTD</div><div class="kpi-val" style="color:var(--green)">KES ${fmt(dividend.summary?.ytd_income_kes||0)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Expected Remaining</div><div class="kpi-val" style="color:var(--gold2)">KES ${fmt(dividend.summary?.expected_remaining_kes||0)}</div></div>
+
+      <!-- Summary KPIs: 3 numbers -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;margin-bottom:1.2rem">
+        <div class="kpi-card">
+          <div class="kpi-label">Received YTD</div>
+          <div class="kpi-val" style="color:var(--green)">${fmt(dividend.summary?.ytd_income_kes||0)}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Expected Remaining</div>
+          <div class="kpi-val" style="color:var(--gold2)">${fmt(dividend.summary?.expected_remaining_kes||0)}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Projected Annual</div>
+          <div class="kpi-val" style="color:var(--text)">${fmt(dividend.summary?.projected_annual_kes||0)}</div>
+        </div>
       </div>
+
+      <!-- Received detail table (only what was actually received) -->
       ${(dividend.ytd_received||[]).length ? `
-        <div class="review-sub">Received This Year</div>
-        <div class="table-wrap">
-          <table class="data-table" style="font-size:.78rem;margin-bottom:.8rem">
-            <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Ex-Date</th><th class="num-col">Amount/Share</th><th class="num-col">Total</th><th class="num-col hide-sm">KES</th></tr></thead>
-            <tbody>${dividend.ytd_received.map(d=>`<tr>
-              <td class="wht mo">${d.ticker}</td>
-              <td class="hide-xs"><span class="hc-exchange-badge">${d.exchange||""}</span></td>
-              <td class="mo">${d.ex_date||"—"}</td>
-              <td class="num-col mo">${d.currency||""} ${d.amount_per_share||0}</td>
-              <td class="num-col mo pos">+${d.currency||""} ${fmt(d.total_received||0)}</td>
-              <td class="num-col hide-sm" style="color:var(--text2)">KES ${fmt(d.total_kes||0)}</td>
-            </tr>`).join("")}</tbody>
-          </table>
-        </div>` : ""}
-      ${(dividend.expected_remaining||[]).length ? `
-        <div class="review-sub">Expected This Year (Future)</div>
-        <div class="table-wrap">
+        <div class="review-sub" style="margin-bottom:.5rem">Received This Year</div>
+        <div class="table-wrap" style="margin-bottom:1.2rem">
           <table class="data-table" style="font-size:.78rem">
-            <thead><tr><th>Ticker</th><th class="hide-xs">Exch</th><th>Est. Ex-Date</th><th class="num-col">Est./Share</th><th class="num-col">Est. Total KES</th><th class="hide-sm">Conf</th></tr></thead>
-            <tbody>${dividend.expected_remaining.map(d=>`<tr>
+            <thead><tr>
+              <th>Ticker</th>
+              <th class="hide-xs">Exch</th>
+              <th>Ex-Date</th>
+              <th class="num-col">Per Share</th>
+              <th class="num-col">Total (Native)</th>
+              <th class="num-col">KES Value</th>
+              <th class="hide-sm">Type</th>
+            </tr></thead>
+            <tbody>${(dividend.ytd_received||[]).map(d=>`<tr>
               <td class="wht mo">${d.ticker}</td>
               <td class="hide-xs"><span class="hc-exchange-badge">${d.exchange||""}</span></td>
-              <td class="mo" style="color:var(--gold2)">${d.expected_ex_date||"—"}</td>
-              <td class="num-col mo">${d.currency||""} ${d.estimated_per_share||0}</td>
-              <td class="num-col mo">KES ${fmt(d.total_kes_expected||0)}</td>
-              <td class="hide-sm"><span class="${d.confidence==='HIGH'?'badge-ok':d.confidence==='MEDIUM'?'badge-warn':'badge-info'}">${d.confidence||"?"}</span></td>
+              <td class="mo" style="font-family:var(--font-mono);font-size:.72rem">${d.ex_date||"—"}</td>
+              <td class="num-col mo">${d.currency||"KES"} ${(d.amount_per_share||0).toFixed ? (d.amount_per_share).toFixed(2) : d.amount_per_share}</td>
+              <td class="num-col mo pos">+${d.currency||"KES"} ${(d.total_received||0).toLocaleString("en-KE")}</td>
+              <td class="num-col" style="color:var(--green)">${fmt(d.total_kes||0)}</td>
+              <td class="hide-sm"><span class="badge-info" style="font-size:.6rem">${d.type||"—"}</span></td>
             </tr>`).join("")}</tbody>
           </table>
+        </div>` : `
+        <div style="font-size:.82rem;color:var(--text3);padding:.5rem 0;margin-bottom:1rem">
+          No dividends received yet this year.
+        </div>`}
+
+      <!-- Expected: summary only (no detail table) -->
+      ${(dividend.expected_remaining||[]).length ? `
+        <div class="review-sub" style="margin-bottom:.5rem">
+          Expected Remaining (${dividend.expected_remaining.length} payment${dividend.expected_remaining.length!==1?"s":""})
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+          ${(dividend.expected_remaining||[]).map(d=>`
+            <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;font-size:.72rem">
+              <span style="color:var(--text);font-weight:500">${d.ticker}</span>
+              <span style="color:var(--text3);margin:0 .3rem">·</span>
+              <span style="color:var(--gold2);font-family:var(--font-mono)">${fmt(d.total_kes_expected||0)}</span>
+              <span style="color:var(--text3);font-size:.62rem;margin-left:.3rem">${d.expected_ex_date||""}</span>
+              <span class="${d.confidence==="HIGH"?"badge-ok":d.confidence==="MEDIUM"?"badge-warn":"badge-info"}" style="font-size:.55rem;margin-left:.3rem">${d.confidence||""}</span>
+            </div>`).join("")}
         </div>` : ""}
     </div>` : ""}
 
@@ -1595,14 +1651,36 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
               </div>
               <div style="font-family:var(--font-mono);font-size:.9rem;color:var(--red);white-space:nowrap">
                 ${st.estimated_loss_pct>0?"-":"+"}${Math.abs(st.estimated_loss_pct||0)}%
-                <div style="font-size:.65rem;color:var(--text3)">-KES ${fmt(st.estimated_loss_kes||0)}</div>
+                <div style="font-size:.65rem;color:var(--text3)">-${fmt(st.estimated_loss_kes||0)}</div>
               </div>
             </div>
           </div>`).join("")}
       </div>
-    </div>` : ""}
+    
 
-    <!-- Thematic Exposure Radar -->
+      <!-- Exposure Radar (inside thematic section) -->
+      ${(thematic.exposure_radar||[]).length ? `
+        <div class="review-sub" style="margin-top:1rem;margin-bottom:.5rem">Exposure Radar</div>
+        <div class="thematic-radar">
+          ${thematic.exposure_radar.map(r => {
+            const pct = r.current_pct||0;
+            const tgt = r.target_pct||10;
+            const statusColor = r.status==="ON_TARGET"?"var(--green)":r.status==="OVERWEIGHT"?"var(--gold)":r.status==="UNDERWEIGHT"?"var(--gold2)":"var(--red)";
+            return `<div class="radar-row">
+              <div class="radar-theme">${r.theme}</div>
+              <div class="radar-bar-wrap">
+                <div class="radar-bar" style="width:${Math.min(100,pct*5)}%;background:${statusColor}"></div>
+                <div class="radar-target-line" style="left:${Math.min(100,tgt*5)}%"></div>
+              </div>
+              <div class="radar-nums">
+                <span style="color:${statusColor};font-family:var(--font-mono);font-size:.72rem">${pct}%</span>
+                <span style="color:var(--text3);font-size:.65rem">/ ${tgt}% target</span>
+                <span class="${r.status==="ON_TARGET"?"badge-ok":r.status==="OVERWEIGHT"?"badge-warn":r.status==="MISSING"?"badge-err":"badge-info"}" style="font-size:.58rem">${(r.status||"").replace("_"," ")}</span>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>` : ""}
+    </div>` : ""}
     ${(thematic.exposure_radar||[]).length ? `
     <div class="panel">
       <div class="panel-title">🌐 Thematic Exposure</div>
@@ -1656,7 +1734,7 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
             <td class="wht mo">${a.ticker||a.asset_class_or_sector||"—"}</td>
             <td class="hide-xs"><span class="hc-exchange-badge hide-xs">${a.exchange||""}</span></td>
             <td class="num-col hide-sm">${a.trim_pct?a.trim_pct+"%":"—"}</td>
-            <td class="num-col hide-sm">${a.trim_value_kes_approx?`KES ${fmt(a.trim_value_kes_approx)}`:"—"}</td>
+            <td class="num-col hide-sm">${a.trim_value_kes_approx?`${fmt(a.trim_value_kes_approx)}`:"—"}</td>
             <td style="font-size:.75rem;color:var(--text2)">${a.rationale||""}</td>
           </tr>`).join("")}</tbody>
         </table>
@@ -2126,3 +2204,85 @@ function cancelUpload() {
   if (inp) inp.value = "";
   _uploadRows = [];
 }
+
+
+// ── Exchange / Convert assets ────────────────────────────────────────────────
+function toggleExchange() {
+  const f = document.getElementById("exchange-form");
+  const c = document.getElementById("exchange-chevron");
+  if (!f) return;
+  const open = f.style.display !== "none";
+  f.style.display = open ? "none" : "block";
+  if (c) c.textContent = open ? "▼" : "▲";
+  if (!open) {
+    // Populate lot selector
+    const lotSel = document.getElementById("ex-from-lot");
+    if (lotSel && _activeLots?.length) {
+      lotSel.innerHTML = _activeLots.map(l =>
+        `<option value="${l.id}">${l.ticker} (${l.exchange}) · ${l.shares.toLocaleString()} shares</option>`
+      ).join("");
+    }
+    // Set today
+    const ed = document.getElementById("ex-date");
+    if (ed && !ed.value) ed.value = new Date().toISOString().split("T")[0];
+  }
+}
+
+function onExchangeFromChange() {
+  const t = document.getElementById("ex-from-type")?.value;
+  document.getElementById("ex-from-savings").style.display = t === "savings" ? "" : "none";
+  document.getElementById("ex-from-stocks").style.display  = t === "stocks"  ? "" : "none";
+}
+
+function onExchangeToChange() {
+  const t = document.getElementById("ex-to-type")?.value;
+  document.getElementById("ex-to-savings").style.display = t === "savings" ? "" : "none";
+  document.getElementById("ex-to-stocks").style.display  = t === "stocks"  ? "" : "none";
+}
+
+async function recordExchange() {
+  const fromType = document.getElementById("ex-from-type")?.value;
+  const toType   = document.getElementById("ex-to-type")?.value;
+  const amount   = parseFloat(document.getElementById("ex-amount")?.value || "0");
+  const date     = document.getElementById("ex-date")?.value;
+  const currency = document.getElementById("ex-currency")?.value || "KES";
+  const note     = document.getElementById("ex-note")?.value || "";
+
+  if (!amount || amount <= 0) { toast("Enter an amount", "error"); return; }
+  if (!date)                  { toast("Select a date",   "error"); return; }
+
+  const payload = { from_type: fromType, to_type: toType, amount, date, currency, note };
+
+  if (fromType === "savings") {
+    payload.from_class = document.getElementById("ex-from-class")?.value;
+    payload.from_label = document.getElementById("ex-from-label")?.value;
+    if (!payload.from_class) { toast("Select source asset class", "error"); return; }
+  } else {
+    payload.from_lot_id = parseInt(document.getElementById("ex-from-lot")?.value || "0");
+    if (!payload.from_lot_id) { toast("Select a stock lot", "error"); return; }
+  }
+
+  if (toType === "savings") {
+    payload.to_class = document.getElementById("ex-to-class")?.value;
+    payload.to_label = document.getElementById("ex-to-label")?.value;
+    if (!payload.to_class) { toast("Select destination asset class", "error"); return; }
+  } else {
+    payload.to_ticker   = document.getElementById("ex-to-ticker")?.value?.toUpperCase();
+    payload.to_exchange = document.getElementById("ex-to-exchange")?.value;
+    payload.to_shares   = parseFloat(document.getElementById("ex-to-shares")?.value || "0");
+    if (!payload.to_ticker)  { toast("Enter a ticker", "error"); return; }
+    if (!payload.to_shares)  { toast("Enter shares bought", "error"); return; }
+  }
+
+  const r = await api("POST", "/api/savings/exchange", payload);
+  if (r.error) { toast(r.error, "error"); return; }
+
+  toast("Exchange recorded ✓");
+  clearCache("/api/savings"); clearCache("/api/stocks"); clearCache("/api/investments");
+  loadSavings(); loadStocks(); loadActiveLots();
+  // Reset form
+  document.getElementById("ex-amount").value = "";
+  document.getElementById("ex-note").value   = "";
+  toggleExchange(); // close panel
+}
+

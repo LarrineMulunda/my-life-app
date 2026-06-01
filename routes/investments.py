@@ -18,7 +18,8 @@ from routes.auth import approved_required
 bp = Blueprint("investments", __name__)
 
 ASSET_CLASSES = ["Cash","SACCO / Chama","Bonds / T-Bills","Pension / NSSF",
-                 "Real Estate","Crypto","Unit Trust / MMF","Foreign Currency","Other"]
+                 "Real Estate","Crypto","Unit Trust / MMF","Farming / Agri",
+                 "Foreign Currency","Other"]
 EXCHANGES     = ["NSE","NYSE","NASDAQ","LSE","JSE","EURONEXT","HKEX",
                  "CRYPTO","DSE","USE","GSE","BRVM","Other"]
 EXCUR         = {"NSE":"KES","NYSE":"USD","NASDAQ":"USD","LSE":"GBP",
@@ -84,6 +85,166 @@ def _to_kes(amount, currency, rates):
 
 
 # ── Tickers API ───────────────────────────────────────────────────────────────
+
+
+@bp.route("/api/savings/exchange", methods=["POST"])
+@approved_required
+def exchange_assets():
+    """Record a conversion between two asset classes.
+    Creates a withdrawal from the source and a deposit to the destination.
+    For stock→asset: records a sale entry + savings deposit.
+    """
+    d = request.json or {}
+    try:
+        _require(d, "from_type", "to_type", "amount", "date")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    from_type  = d["from_type"]   # "savings" or "stocks"
+    to_type    = d["to_type"]     # "savings" or "stocks"
+    amount     = float(d["amount"])
+    date       = d["date"]
+    currency   = d.get("currency","KES")
+    note       = d.get("note","") or f"Exchange on {date}"
+
+    # Source details
+    from_class = d.get("from_class","")   # asset class if savings
+    from_label = d.get("from_label","")   # label if savings
+    from_lot   = d.get("from_lot_id")     # lot id if stocks
+
+    # Destination details
+    to_class   = d.get("to_class","")
+    to_label   = d.get("to_label","")
+    to_ticker  = d.get("to_ticker","")
+    to_exchange= d.get("to_exchange","")
+
+    conn = get_db()
+    try:
+        fx_rates = _get_fx_rates(conn)
+        rows_created = []
+
+        # ── Debit the source ─────────────────────────────────────────────────
+        if from_type == "savings":
+            _exec(conn, f"""INSERT INTO savings
+                (user_id, label, asset_class, amount, type, currency, date, note)
+                VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+                (uid(), from_label or from_class, from_class, amount,
+                 "withdrawal", currency, date,
+                 f"→ Exchange to {to_class or to_ticker}: {note}"))
+            rows_created.append(f"Withdrew {currency} {amount:,.2f} from {from_label or from_class}")
+
+        elif from_type == "stocks" and from_lot:
+            # Record a sale for the lot
+            lot = _fetchone(conn,
+                f"SELECT * FROM stock_lots WHERE id={p()} AND user_id={p()}",
+                (from_lot, uid()))
+            if not lot:
+                conn.rollback()
+                return jsonify({"error": "Lot not found"}), 404
+            sale_price = amount / float(lot["shares"]) if lot["shares"] else 0
+            _exec(conn, f"""INSERT INTO stock_sales
+                (user_id, lot_id, ticker, exchange, shares, purchase_price,
+                 sale_price, date, note)
+                VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+                (uid(), from_lot, lot["ticker"], lot.get("exchange","NSE"),
+                 lot["shares"], lot["purchase_price"], sale_price, date,
+                 f"Exchange → {to_label or to_class or to_ticker}"))
+            # Zero out the lot
+            _exec(conn, f"UPDATE stock_lots SET shares=0 WHERE id={p()} AND user_id={p()}",
+                  (from_lot, uid()))
+            rows_created.append(f"Sold {lot['ticker']} ({lot['exchange']}) lot → {currency} {amount:,.2f}")
+
+        # ── Credit the destination ────────────────────────────────────────────
+        if to_type == "savings":
+            _exec(conn, f"""INSERT INTO savings
+                (user_id, label, asset_class, amount, type, currency, date, note)
+                VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+                (uid(), to_label or to_class, to_class, amount,
+                 "deposit", currency, date,
+                 f"← Exchange from {from_class or from_label}: {note}"))
+            rows_created.append(f"Deposited {currency} {amount:,.2f} into {to_label or to_class}")
+
+        elif to_type == "stocks" and to_ticker:
+            shares  = float(d.get("to_shares", 0))
+            price   = amount / shares if shares else 0
+            _exec(conn, f"""INSERT INTO stock_lots
+                (user_id, ticker, exchange, shares, purchase_price,
+                 currency, date, note)
+                VALUES ({p()},{p()},{p()},{p()},{p()},{p()},{p()},{p()})""",
+                (uid(), to_ticker.upper(), to_exchange or "NSE", shares,
+                 price, currency, date,
+                 f"← Exchange from {from_class or from_label}"))
+            rows_created.append(f"Bought {shares} {to_ticker} @ {price:.4f}")
+
+        conn.commit()
+        return jsonify({"ok": True, "actions": rows_created})
+
+    except Exception as e:
+        try: conn.rollback()
+        except: pass
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@bp.route("/api/investments/all")
+@approved_required
+def investments_all():
+    """Single endpoint returning stocks, overview, savings, FX, lots, and anomalies.
+    Reduces 6 round trips to 1 on page load."""
+    conn = get_db()
+    try:
+        port     = _build_portfolio(conn)
+        sav_rows = _fetchall(conn,
+            f"SELECT * FROM savings WHERE user_id={ph()}", (uid(),))
+        fx_rates = _get_fx_rates(conn)
+        lots     = port.get("lots", [])
+        anomalies_pending = _fetchall(conn,
+            "SELECT COUNT(*) as n FROM price_anomalies WHERE status='manual_review'")
+    finally:
+        conn.close()
+
+    # Build overview
+    sav_by_class = {}
+    for r in sav_rows:
+        cur  = r.get("currency") or "KES"
+        sign = 1 if r["type"] in ("deposit","interest") else -1
+        v_kes = _to_kes(float(r["amount"]), cur, fx_rates) * sign
+        sav_by_class[r["asset_class"]] = sav_by_class.get(r["asset_class"], 0) + v_kes
+
+    savings_net  = sum(sav_by_class.values())
+    total_market = port["total_market"] + savings_net
+    total_cost   = port["total_cost"]   + savings_net
+    total_gain   = port["total_market"] - port["total_cost"]
+
+    return jsonify({
+        "ok": True,
+        "stocks": {
+            "holdings":       port["holdings"],
+            "total_cost":     port["total_cost"],
+            "total_market":   port["total_market"],
+            "total_gain":     port["total_gain"],
+            "portfolio_pct":  port["portfolio_pct"],
+            "total_realized": port["total_realized"],
+        },
+        "overview": {
+            "total_value":    round(total_market, 2),
+            "total_cost":     round(total_cost, 2),
+            "total_gain":     round(total_gain, 2),
+            "total_realized": port["total_realized"],
+            "savings_net":    round(savings_net, 2),
+            "has_foreign":    any(h.get("currency","KES") != "KES" for h in port["holdings"]),
+            "asset_summary":  {
+                cls: {"value": v, "cost": v, "currency": "KES", "type": "savings"}
+                for cls, v in sav_by_class.items()
+            },
+        },
+        "savings":    sav_rows,
+        "lots":       lots,
+        "fx_rates":   fx_rates,
+        "pending_anomalies": (anomalies_pending[0]["n"] if anomalies_pending else 0),
+    })
+
 
 @bp.route("/api/tickers")
 @approved_required
@@ -239,9 +400,27 @@ def _build_portfolio(conn):
         lot["lot_cost_kes"]      = round(_to_kes(lot_cost, cur, fx_rates), 2)
         lot["fx_rate_kes"]       = fx_rates.get(cur, 1.0)
         all_lots.append(lot)
-    # Prices from GLOBAL table — shared by all users
-    prices   = _fetchall(conn,
-        "SELECT * FROM global_prices ORDER BY date DESC")
+    # Prices from GLOBAL table — only for tickers this user holds
+    user_tickers = list({(l["ticker"], l.get("exchange","NSE")) for l in lots})
+    if user_tickers and is_pg():
+        ticker_pairs = ",".join(f"('{t}','{e}')" for t,e in user_tickers)
+        prices = _fetchall(conn, f"""
+            SELECT DISTINCT ON (ticker, exchange) ticker, exchange, price, currency, date
+            FROM global_prices
+            WHERE (ticker, exchange) IN ({ticker_pairs})
+            ORDER BY ticker, exchange, date DESC
+        """)
+    elif user_tickers:
+        in_clause = ",".join(f"'{t}|{e}'" for t,e in user_tickers)
+        prices = _fetchall(conn, f"""
+            SELECT ticker, exchange, price, currency, MAX(date) as date
+            FROM global_prices
+            WHERE (ticker || '|' || exchange) IN ({in_clause})
+            GROUP BY ticker, exchange, price, currency
+            HAVING date = MAX(date)
+        """)
+    else:
+        prices = []
     sales    = _fetchall(conn,
         f"SELECT * FROM stock_sales WHERE user_id={ph()} ORDER BY date DESC",
         (u,))
@@ -252,7 +431,25 @@ def _build_portfolio(conn):
         k = (pr["ticker"], pr.get("exchange", "NSE"))
         if k not in latest_price:
             latest_price[k] = pr
-    for pr in reversed(prices):
+    # Price history — fetch last 30 days only for sparklines
+    if user_tickers and is_pg():
+        ticker_pairs = ",".join(f"('{t}','{e}')" for t,e in user_tickers)
+        price_history_rows = _fetchall(conn, f"""
+            SELECT ticker, exchange, price, date FROM global_prices
+            WHERE (ticker, exchange) IN ({ticker_pairs})
+            ORDER BY ticker, exchange, date ASC
+        """)
+    elif user_tickers:
+        in_clause = ",".join(f"'{t}|{e}'" for t,e in user_tickers)
+        price_history_rows = _fetchall(conn, f"""
+            SELECT ticker, exchange, price, date FROM global_prices
+            WHERE (ticker || '|' || exchange) IN ({in_clause})
+            ORDER BY ticker, exchange, date ASC
+        """)
+    else:
+        price_history_rows = []
+
+    for pr in price_history_rows:
         k = (pr["ticker"], pr.get("exchange", "NSE"))
         price_hist.setdefault(k, []).append({
             "date": str(pr["date"]), "price": float(pr["price"])})
@@ -984,15 +1181,36 @@ def gen_review():
         return jsonify({"error": "No Gemini API key — add it in Settings"}), 400
     conn = get_db()
     try:
-        port = _build_portfolio(conn)
-        sav  = {}
-        for r in _fetchall(conn, f"""
-            SELECT asset_class,
-                   SUM(CASE WHEN type IN ('deposit','interest') THEN amount ELSE -amount END) as v
-            FROM savings WHERE user_id={ph()}
-            GROUP BY asset_class
-        """, (uid(),)):
-            sav[r["asset_class"]] = float(r["v"])
+        port     = _build_portfolio(conn)
+        fx_rates = _get_fx_rates(conn)
+        # Rich savings: individual entries with labels, amounts, types
+        sav_rows = _fetchall(conn, f"""
+            SELECT label, asset_class, type, amount, currency, date, note
+            FROM savings WHERE user_id={ph()} ORDER BY asset_class, date
+        """, (uid(),))
+        # Class totals for context string
+        sav_totals = {}
+        sav_entries = []
+        for r in sav_rows:
+            cur  = r.get("currency") or "KES"
+            sign = 1 if r["type"] in ("deposit","interest") else -1
+            v_kes = _to_kes(float(r["amount"]), cur, fx_rates) * sign
+            cls = r["asset_class"]
+            sav_totals[cls] = sav_totals.get(cls, 0) + v_kes
+            sav_entries.append({
+                "label":       r["label"],
+                "asset_class": cls,
+                "type":        r["type"],
+                "amount":      float(r["amount"]),
+                "currency":    cur,
+                "amount_kes":  round(v_kes, 2),
+                "date":        str(r["date"]) if r.get("date") else "",
+                "note":        r.get("note","") or "",
+            })
+        sav = {
+            "totals":  sav_totals,      # {asset_class: total_kes}
+            "entries": sav_entries,     # full detail for health agent
+        }
     finally:
         conn.close()
     job_id = _agents.start_pipeline(uid(), api_key, port, sav)

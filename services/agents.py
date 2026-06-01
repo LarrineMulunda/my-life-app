@@ -159,17 +159,37 @@ def _portfolio_context(portfolio, savings):
                f"return {h.get('pct_return',0):.1f}%" if has_price else ", no price data")
         )
 
-    sav_lines = [f"  {k}: KES {v:,.0f}" for k, v in (savings or {}).items()]
+    # Support both old {class:val} format and new {totals, entries} format
+    if isinstance(savings, dict) and "totals" in savings:
+        sav_totals  = savings.get("totals", {})
+        sav_entries = savings.get("entries", [])
+    else:
+        sav_totals  = savings or {}
+        sav_entries = []
+
+    sav_lines = [f"  {k}: KES {v:,.0f}" for k, v in sav_totals.items()]
+
+    # Build detailed other-assets section grouped by class
+    detail_lines = []
+    grouped = {}
+    for e in sav_entries:
+        grouped.setdefault(e["asset_class"], []).append(e)
+    for cls, entries in grouped.items():
+        net = sum(e["amount_kes"] for e in entries)
+        labels = list({e["label"] for e in entries if e["label"]})
+        detail_lines.append(f"  {cls}: KES {net:,.0f}" +
+                           (f" ({', '.join(labels)})" if labels else ""))
 
     return (
         f"Today: {today}\n"
-        f"Portfolio total cost: KES {portfolio.get('total_cost',0):,.0f}\n"
-        f"Portfolio market value: KES {portfolio.get('total_market',0):,.0f}\n"
-        f"Unrealised gain/loss: KES {portfolio.get('total_gain',0):,.0f} "
+        f"Stock portfolio cost:  KES {portfolio.get('total_cost',0):,.0f}\n"
+        f"Stock market value:    KES {portfolio.get('total_market',0):,.0f}\n"
+        f"Unrealised gain/loss:  KES {portfolio.get('total_gain',0):,.0f} "
         f"({portfolio.get('portfolio_pct',0):.1f}%)\n"
-        f"Realised gains: KES {portfolio.get('total_realized',0):,.0f}\n\n"
-        f"HOLDINGS ({len(holds)}):\n" + "\n".join(holds) + "\n\n"
-        f"OTHER ASSETS:\n" + ("\n".join(sav_lines) or "  None")
+        f"Realised gains:        KES {portfolio.get('total_realized',0):,.0f}\n\n"
+        f"STOCK HOLDINGS ({len(holds)}):\n" + "\n".join(holds) + "\n\n"
+        f"OTHER ASSETS (bonds, MMF, farming etc):\n" +
+        ("\n".join(detail_lines) or "  None")
     )
 
 
@@ -396,7 +416,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 
 
-def _prompt_dividend(ctx, portfolio):
+def _prompt_dividend(ctx, portfolio, savings=None):
     """Dividend intelligence: earned YTD, expected this year, yield analysis."""
     today = datetime.today().strftime("%Y-%m-%d")
     year  = datetime.today().year
@@ -410,14 +430,39 @@ def _prompt_dividend(ctx, portfolio):
             )
     holdings_str = "\n".join(holds) or "  No holdings"
 
-    return f"""You are a dividend income analyst. Today is {today}.
+    # Include MMF/bond income from savings
+    if isinstance(savings, dict) and "totals" in savings:
+        sav_totals  = savings.get("totals", {})
+        sav_entries = savings.get("entries", [])
+    else:
+        sav_totals  = savings or {}
+        sav_entries = []
 
-This investor holds the following positions:
+    mmf_detail  = [e for e in sav_entries if "mmf" in e.get("asset_class","").lower() or "trust" in e.get("asset_class","").lower()]
+    bond_detail = [e for e in sav_entries if "bond" in e.get("asset_class","").lower() or "bill" in e.get("asset_class","").lower()]
+
+    sep = chr(10)
+    mmf_str  = sep.join(f"  {e['label']}: KES {e['amount_kes']:,.0f}" for e in mmf_detail) or "  None"
+    bond_str = sep.join(f"  {e['label']}: KES {e['amount_kes']:,.0f}" for e in bond_detail) or "  None"
+
+
+    return f"""You are a dividend and income analyst. Today is {today}.
+
+This investor holds the following stock positions:
 {holdings_str}
+
+MMF / Unit Trusts (generate daily interest):
+{mmf_str}
+
+Bonds / T-Bills (generate coupon/interest income):
+{bond_str}
 
 Portfolio total market value: KES {portfolio.get('total_market', 0):,.0f}
 
-Use Google Search to research dividend history and upcoming payments for EACH holding.
+Use Google Search to research:
+1. Dividend history for each stock holding
+2. Current MMF rates in Kenya for each MMF held
+3. T-bill/bond coupon rates
 
 Calculate:
 1. Dividends actually RECEIVED so far in {year} (based on ex-dates already passed)
@@ -468,43 +513,158 @@ Return ONLY valid JSON (no markdown, no code fences):
 }}"""
 
 
-def _prompt_health(ctx, portfolio):
-    """Portfolio health: Sharpe ratio, stress testing, cross-asset metrics."""
+def _prompt_health(ctx, portfolio, savings=None):
+    """Portfolio health: real computed metrics + Gemini interpretation."""
     today = datetime.today().strftime("%Y-%m-%d")
 
-    # Categorise holdings
-    stocks = [h for h in portfolio.get("holdings",[]) if h.get("exchange") not in ("CRYPTO",)]
-    crypto = [h for h in portfolio.get("holdings",[]) if h.get("exchange") == "CRYPTO"]
+    # Support both old and new savings format
+    if isinstance(savings, dict) and "totals" in savings:
+        sav_totals  = savings.get("totals", {})
+        sav_entries = savings.get("entries", [])
+    else:
+        sav_totals  = savings or {}
+        sav_entries = []
 
-    return f"""You are a portfolio risk analyst and quantitative strategist. Today is {today}.
+    # ── Compute real metrics from actual portfolio data ───────────────────
+    holdings = portfolio.get("holdings", [])
+    total_stock_kes = portfolio.get("total_market", 0) or 0
+    total_sav_kes   = sum(sav_totals.values())
+    total_all_kes   = total_stock_kes + total_sav_kes
+
+    # Asset class allocation (real %)
+    alloc = {}
+    if total_all_kes > 0:
+        # Stocks by exchange
+        exch_vals = {}
+        for h in holdings:
+            exch = h.get("exchange","NSE")
+            exch_vals[exch] = exch_vals.get(exch, 0) + (h.get("market_value_kes") or h.get("total_cost_kes", 0))
+        for exch, val in exch_vals.items():
+            alloc[f"Stocks ({exch})"] = round(val / total_all_kes * 100, 1)
+        # Other assets
+        for cls, val in sav_totals.items():
+            if val > 0:
+                alloc[cls] = round(val / total_all_kes * 100, 1)
+
+    # Largest single position (concentration risk)
+    max_pos_pct = 0
+    max_pos_ticker = ""
+    for h in holdings:
+        if total_all_kes > 0:
+            pct = (h.get("market_value_kes") or h.get("total_cost_kes", 0)) / total_all_kes * 100
+            if pct > max_pos_pct:
+                max_pos_pct = pct
+                max_pos_ticker = h["ticker"]
+
+    # Currency exposure
+    ccy_split = {}
+    for h in holdings:
+        ccy = h.get("currency","KES")
+        ccy_split[ccy] = ccy_split.get(ccy, 0) + (h.get("market_value_kes") or h.get("total_cost_kes", 0))
+    for e in sav_entries:
+        ccy = e.get("currency","KES")
+        ccy_split[ccy] = ccy_split.get(ccy, 0) + max(0, e.get("amount_kes", 0))
+    ccy_pct = {k: round(v/total_all_kes*100,1) for k,v in ccy_split.items()} if total_all_kes else {}
+
+    # Actual portfolio return (weighted, where price data available)
+    total_cost  = portfolio.get("total_cost", 0) or 1
+    total_gain  = portfolio.get("total_gain", 0) or 0
+    actual_return_pct = round(total_gain / total_cost * 100, 1) if total_cost else 0
+
+    # Exchanges and geography
+    exchanges = list({h.get("exchange","NSE") for h in holdings})
+
+    # Asset-specific details for health agent
+    mmf_kes    = sum(v for cls,v in sav_totals.items() if "mmf" in cls.lower() or "trust" in cls.lower() or "unit" in cls.lower())
+    bonds_kes  = sum(v for cls,v in sav_totals.items() if "bond" in cls.lower() or "bill" in cls.lower() or "fixed" in cls.lower())
+    farming_kes= sum(v for cls,v in sav_totals.items() if "farm" in cls.lower() or "agri" in cls.lower())
+    sacco_kes  = sum(v for cls,v in sav_totals.items() if "sacco" in cls.lower() or "chama" in cls.lower())
+    crypto_kes = sum((h.get("market_value_kes") or h.get("total_cost_kes",0)) for h in holdings if h.get("exchange")=="CRYPTO")
+
+    # MMF/bond label details
+    mmf_labels = [e["label"] for e in sav_entries if "mmf" in e.get("asset_class","").lower() or "trust" in e.get("asset_class","").lower()]
+    bond_labels= [e["label"] for e in sav_entries if "bond" in e.get("asset_class","").lower() or "bill" in e.get("asset_class","").lower()]
+    farm_labels= [e["label"] for e in sav_entries if "farm" in e.get("asset_class","").lower() or "agri" in e.get("asset_class","").lower()]
+
+    # Build the computed metrics block
+    computed = (
+        "COMPUTED METRICS (from actual portfolio data):\n"
+        f"  Total portfolio value: KES {total_all_kes:,.0f}\n"
+        f"  Stock market value:    KES {total_stock_kes:,.0f} ({round(total_stock_kes/total_all_kes*100,1) if total_all_kes else 0}%)\n"
+        f"  MMF / Unit Trusts:     KES {mmf_kes:,.0f}" + (f" ({", ".join(mmf_labels[:3])})" if mmf_labels else "") + "\n"
+        f"  Bonds / T-Bills:       KES {bonds_kes:,.0f}" + (f" ({", ".join(bond_labels[:3])})" if bond_labels else "") + "\n"
+        f"  Farming / Agri:        KES {farming_kes:,.0f}" + (f" ({", ".join(farm_labels[:3])})" if farm_labels else "") + "\n"
+        f"  SACCO / Chama:         KES {sacco_kes:,.0f}\n"
+        f"  Crypto:                KES {crypto_kes:,.0f}\n"
+        f"  Actual stock return:   {actual_return_pct}% (unrealised, on cost basis)\n"
+        f"  Largest single pos:    {max_pos_ticker} at {round(max_pos_pct,1)}% of total portfolio\n"
+        f"  Exchanges held:        {", ".join(exchanges)}\n"
+        f"  Currency exposure:     {", ".join(f"{c}: {p}%" for c,p in sorted(ccy_pct.items(), key=lambda x:-x[1]))}\n"
+        "  Asset allocation:\n" + "".join(f"    {k}: {v}%\n" for k,v in sorted(alloc.items(), key=lambda x:-x[1]))
+    )
+
+    return f"""You are a portfolio risk analyst. Today is {today}.
 
 {ctx}
 
-This portfolio may include: stocks, ETFs, bonds, MMFs, crypto, farming/agriculture.
+{computed}
 
-Use Google Search to research:
-1. Current risk-free rate (Kenya 91-day T-bill rate)
-2. Volatility of individual holdings
-3. Correlation between asset classes
-4. Stress scenarios (2008 crash, COVID crash, 2022 rate hikes, Kenya shilling depreciation)
+Use Google Search to find:
+1. Kenya 91-day T-bill rate (risk-free rate)
+2. Current MMF rates in Kenya (CIC, Sanlam, NCBA, etc)
+3. NSE All Share Index YTD return (benchmark)
+4. USD/KES trend this year
 
-Compute or estimate:
-- Sharpe Ratio = (portfolio return - risk-free rate) / portfolio std deviation
-- Max Drawdown: worst peak-to-trough decline scenario
-- Beta to global markets
-- Stress test: how much would this portfolio lose in each scenario
+This portfolio has FOUR asset groups requiring different analysis:
 
-Return ONLY valid JSON (no markdown, no code fences):
+STOCKS/ETFs/CRYPTO: Standard equity risk analysis. Note NSE stocks have lower liquidity than NYSE/NASDAQ.
+
+MMF / UNIT TRUSTS: Low-risk liquid savings earning daily interest. Risk = CBK rate cuts reduce yield.
+Stress test: If CBK cuts 200bps, MMF yield drops ~2%. Estimate impact on annual income.
+
+BONDS / T-BILLS: Fixed income. Risk = interest rate rises cause capital loss if sold early.
+If held to maturity, principal is safe. Stress test: rising rates scenario.
+
+FARMING / AGRICULTURE: Illiquid, long-cycle, weather-dependent. Not marked to market.
+Risk = drought, commodity price swings, payment delays. Strength = inflation hedge.
+Stress test: crop failure or 30% commodity price drop.
+
+SACCO / CHAMA: Semi-liquid. Locked savings with member dividend. Risk = governance, liquidity.
+
+Score the portfolio 0-100 across FOUR dimensions (25 pts each):
+
+1. DIVERSIFICATION (25pts):
+   - Asset class breadth: stocks+bonds+MMF+farming+crypto = full marks
+   - Geographic spread: NSE-only = low, NSE+global = high
+   - Single-stock concentration: if largest position >30% of total = penalty
+
+2. RESILIENCE (25pts):
+   - Defensive assets (MMF+bonds) as % of total: >20% = resilient
+   - Currency hedge: some USD exposure good for KES depreciation protection
+   - Illiquid assets (farming, SACCO): cap at 20% or penalise
+
+3. RETURN QUALITY (25pts):
+   - Sharpe-like quality: stock return vs Kenya T-bill rate
+   - MMF/bond yield vs inflation
+   - Whether growth assets (stocks, crypto) are outperforming
+
+4. INCOME (25pts):
+   - Dividend-paying stocks
+   - MMF interest income
+   - Bond/T-bill coupon
+   - SACCO dividends
+   - Farming revenue
+
+Return ONLY valid JSON:
 {{
   "health_score": 0,
   "health_breakdown": {{
     "diversification": 0,
+    "resilience":      0,
     "return_quality":  0,
-    "momentum":        0,
-    "income":          0,
-    "risk":            0
+    "income":          0
   }},
-  "health_commentary": "2-sentence plain-English summary of the score",
+  "health_commentary": "2-sentence summary",
   "risk_metrics": {{
     "sharpe_ratio":          0,
     "risk_free_rate_pct":    0,
@@ -512,24 +672,31 @@ Return ONLY valid JSON (no markdown, no code fences):
     "beta_to_global":        0,
     "concentration_risk":    "LOW|MEDIUM|HIGH",
     "currency_risk":         "LOW|MEDIUM|HIGH",
-    "liquidity_risk":        "LOW|MEDIUM|HIGH"
+    "liquidity_risk":        "LOW|MEDIUM|HIGH",
+    "largest_position_ticker": "",
+    "largest_position_pct": 0
   }},
-  "stress_tests": [
-    {{
-      "scenario":       "",
-      "description":    "",
-      "estimated_loss_pct": 0,
-      "estimated_loss_kes": 0,
-      "most_affected":  ["ticker1","ticker2"],
-      "defensive_assets": ["what would protect the portfolio"]
-    }}
-  ],
   "asset_class_health": [
     {{
-      "class":       "",
-      "allocation_pct": 0,
-      "health":      "STRONG|GOOD|NEUTRAL|WEAK",
-      "comment":     ""
+      "class":         "",
+      "value_kes":     0,
+      "allocation_pct":0,
+      "health":        "STRONG|GOOD|NEUTRAL|WEAK",
+      "risk_note":     "specific risk for this asset class",
+      "income_note":   "income contribution",
+      "comment":       "1-sentence assessment"
+    }}
+  ],
+  "stress_tests": [
+    {{
+      "scenario":           "",
+      "description":        "",
+      "asset_classes_affected": [],
+      "estimated_loss_pct": 0,
+      "estimated_loss_kes": 0,
+      "most_affected":      [],
+      "defensive_assets":   ["what protects this portfolio specifically"],
+      "resilient_assets":   ["which holdings hold up well"]
     }}
   ],
   "portfolio_badges": [
@@ -540,19 +707,38 @@ Return ONLY valid JSON (no markdown, no code fences):
       "awarded":     true
     }}
   ],
-  "improvement_suggestions": ["list 3 specific actions to improve portfolio health"]
+  "investor_profile": {{
+    "type":         "",
+    "sub_type":     "",
+    "description":  "",
+    "risk_appetite":"CONSERVATIVE|MODERATE|AGGRESSIVE",
+    "time_horizon": "",
+    "primary_goal": "",
+    "strengths":    [],
+    "gaps":         []
+  }},
+  "improvement_suggestions": []
 }}
 
-BADGE CRITERIA (award if portfolio qualifies):
-- "Diversification Master" 🌍 : holdings across 3+ exchanges
+STRESS TEST SCENARIOS (must include all 5):
+1. Kenya shilling depreciation (-20% KES vs USD) — affects USD holdings and imported goods
+2. NSE liquidity crisis (-30% NSE stocks) — affects KCB, SCOM, ABSA etc
+3. CBK rate hike (+300bps) — hurts bond prices, boosts MMF yields, slows NSE
+4. Global market crash (-40% equities) — affects NASDAQ/NYSE holdings
+5. Kenya-specific: drought + commodity shock — affects farming income, food inflation
+
+BADGE CRITERIA:
+- "Diversification Master" 🌍 : stocks + bonds + MMF + one more = 4 asset classes
 - "Dividend Investor" 💰 : 3+ dividend-paying stocks
-- "Growth Hunter" 🚀 : 50%+ in growth stocks/ETFs
-- "Africa First" 🌍 : 40%+ in African markets (NSE, JSE, etc)
+- "Africa First" 🌍 : 40%+ in NSE/African markets
+- "Fixed Income Builder" 📊 : bonds+MMF > 15% of portfolio
+- "Inflation Fighter" 🌱 : farming + real assets > 5% of portfolio
 - "Tech Forward" 💻 : 30%+ in tech stocks/ETFs
-- "Income Builder" 📈 : portfolio yield > 3%
-- "Risk Manager" 🛡️ : well-diversified, Sharpe > 1
-- "Long Term Thinker" ⏳ : average holding age > 1 year
-- "Global Citizen" 🌐 : holdings in 4+ currencies"""
+- "Risk Manager" 🛡️ : Sharpe > 1 AND defensive assets > 20%
+- "Long Term Thinker" ⏳ : avg stock holding > 1 year
+- "Global Citizen" 🌐 : holdings in 3+ currencies
+- "Income Builder" 📈 : total income yield > 4% (dividends + MMF + bonds)
+"""
 
 
 def _prompt_analyst_multithreaded(ticker, exchange, portfolio_context):
@@ -921,8 +1107,8 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         threading.Thread(target=run_analyst_multithreaded, args=()),
         threading.Thread(target=run_agent,                 args=("thematic",    _prompt_thematic,    ctx)),
         threading.Thread(target=run_agent,                 args=("corporate",   _prompt_corporate, tickers_str)),
-        threading.Thread(target=run_agent,                 args=("dividend",    _prompt_dividend,    ctx, portfolio)),
-        threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio)),
+        threading.Thread(target=run_agent,                 args=("dividend",    _prompt_dividend,    ctx, portfolio, savings)),
+        threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio, savings)),
     ]
     for t in threads: t.daemon = True; t.start()
     for t in threads: t.join(timeout=150)
