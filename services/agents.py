@@ -90,31 +90,45 @@ AGENTS = [
 
 # ── Gemini call ───────────────────────────────────────────────────────────────
 
-def _gemini(api_key, prompt, timeout=90, retries=3):
-    """Call Gemini with exponential back-off retry on rate-limit / server errors."""
-    import time
+def _gemini(api_key, prompt, timeout=90, retries=3, use_search=True):
+    """Call Gemini with hard wall-clock timeout enforced via a worker thread.
+
+    requests timeout=(connect, read) only catches slow headers/chunks — it does
+    NOT cancel a blocking resp.json() on a slow streaming response.  The fix is
+    to run the HTTP call in a sub-thread and join it with a hard deadline; if the
+    thread is still alive after `timeout` seconds we abandon it and raise.
+    """
+    import time, concurrent.futures
     if not HAS_REQUESTS:
         raise RuntimeError("requests not installed")
     last_err = None
+
+    def _call():
+        body = {
+            "contents":         [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3},
+        }
+        if use_search:
+            body["tools"] = [{"google_search": {}}]
+        resp = _req.post(
+            f"{GEMINI_URL}?key={api_key}",
+            json=body,
+            timeout=(10, timeout),  # (connect_timeout, read_timeout)
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     for attempt in range(retries):
         try:
-            resp = _req.post(
-                f"{GEMINI_URL}?key={api_key}",
-                json={
-                    "contents":         [{"parts": [{"text": prompt}]}],
-                    "tools":            [{"google_search": {}}],
-                    "generationConfig": {"temperature": 0.3},
-                },
-                timeout=timeout,
-            )
-            # 429 = rate limit, 500/503 = server error → retry
-            if resp.status_code in (429, 500, 503):
-                wait = 2 ** attempt * 5  # 5s, 10s, 20s
-                time.sleep(wait)
-                last_err = f"HTTP {resp.status_code}"
-                continue
-            resp.raise_for_status()
-            data = resp.json()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(_call)
+                try:
+                    data = future.result(timeout=timeout)
+                except concurrent.futures.TimeoutError:
+                    raise RuntimeError(f"Gemini timed out after {timeout}s")
+            status = data.get("candidates", [{}])[0].get("finishReason", "")
+            if status == "RECITATION":
+                raise RuntimeError("Gemini RECITATION stop — retry")
             return "".join(
                 p.get("text", "")
                 for p in data.get("candidates", [{}])[0]
@@ -122,8 +136,11 @@ def _gemini(api_key, prompt, timeout=90, retries=3):
             )
         except Exception as e:
             last_err = str(e)
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt * 3)  # 3s, 6s
+            code = getattr(getattr(e, "response", None), "status_code", 0)
+            if code in (429, 500, 503):
+                time.sleep(2 ** attempt * 5)
+            elif attempt < retries - 1:
+                time.sleep(2 ** attempt * 3)
     raise RuntimeError(f"Gemini failed after {retries} attempts: {last_err}")
 
 def _extract_json(text):
@@ -1573,33 +1590,60 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     sub_lock    = threading.Lock()
     sub_sem     = threading.Semaphore(6)  # max 6 concurrent
 
+    # Sub-verifier timeout: shorter than main agents since they verify, not research
+    SUB_TIMEOUT = 45  # seconds per sub-verifier call (paid Gemini is fast)
+
     def _run_sub_verifier(aid):
-        with sub_sem:
-            try:
-                p = _prompt_sub_verifier(aid, agent_results.get(aid, {}))
-                t = _gemini(api_key, p, timeout=90)
-                r = _extract_json(t)
-                with sub_lock:
-                    sub_results[aid] = r
-            except Exception as e:
-                with sub_lock:
-                    sub_results[aid] = {
-                        "agent": aid, "confidence": "MEDIUM",
-                        "needs_revision": False, "feedback": str(e),
-                        "reliability_score": "MEDIUM", "issues": [],
-                    }
+        # Semaphore acquired OUTSIDE try so it's always released even on timeout
+        acquired = sub_sem.acquire(timeout=10)  # don't wait forever for semaphore
+        if not acquired:
+            with sub_lock:
+                sub_results[aid] = {
+                    "agent": aid, "confidence": "MEDIUM",
+                    "needs_revision": False, "feedback": "semaphore timeout",
+                    "reliability_score": "MEDIUM", "issues": [],
+                }
+            return
+        try:
+            p = _prompt_sub_verifier(aid, agent_results.get(aid, {}))
+            t = _gemini(api_key, p, timeout=SUB_TIMEOUT, retries=1, use_search=False)  # no grounding — faster
+            r = _extract_json(t)
+            with sub_lock:
+                sub_results[aid] = r
+        except Exception as e:
+            with sub_lock:
+                sub_results[aid] = {
+                    "agent": aid, "confidence": "MEDIUM",
+                    "needs_revision": False, "feedback": str(e),
+                    "reliability_score": "MEDIUM", "issues": [],
+                }
+        finally:
+            sub_sem.release()  # always release, even on timeout/error
 
     sub_threads = [
         threading.Thread(target=_run_sub_verifier, args=(aid,), daemon=True)
         for aid in ALL_REVISIONABLE
     ]
     for t in sub_threads: t.start()
-    for t in sub_threads: t.join(timeout=120)
+    # Wait at most SUB_TIMEOUT + 15s per thread for ALL to complete
+    deadline = SUB_TIMEOUT + 15
+    for t in sub_threads: t.join(timeout=deadline)
+    # Any thread still alive means it timed out — fill in default result
+    for t, aid in zip(sub_threads, ALL_REVISIONABLE):
+        if t.is_alive():
+            with sub_lock:
+                if aid not in sub_results:
+                    sub_results[aid] = {
+                        "agent": aid, "confidence": "MEDIUM",
+                        "needs_revision": False,
+                        "feedback": "sub-verifier timed out after deadline",
+                        "reliability_score": "MEDIUM", "issues": [],
+                    }
 
     # Meta-verifier: cross-agent coherence
     try:
         meta_prompt  = _prompt_meta_verifier(agent_results, sub_results)
-        meta_text    = _gemini(api_key, meta_prompt, timeout=90)
+        meta_text    = _gemini(api_key, meta_prompt, timeout=60, use_search=False)
         meta_result  = _extract_json(meta_text)
     except Exception as e:
         meta_result = {
