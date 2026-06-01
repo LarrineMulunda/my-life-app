@@ -801,64 +801,217 @@ def _prompt_analyst_batch(tickers_batch):
     )
 
 
-def _prompt_verifier(agent_results):
+# ── Specialist sub-verifier prompts (one per agent domain) ──────────────────
+
+_SUB_VERIFIER_SPECS = {
+    "performance": {
+        "role":   "a quantitative portfolio performance analyst and auditor",
+        "checks": (
+            "1. Are return percentages mathematically consistent with stated prices?\n"
+            "2. Does the health score align with the 5 breakdown dimensions?\n"
+            "3. Are top performers / underperformers plausible given current market conditions?\n"
+            "4. Use Google Search to confirm recent performance of major NSE / NYSE indices."
+        ),
+    },
+    "rebalancing": {
+        "role":   "a portfolio construction and asset allocation specialist",
+        "checks": (
+            "1. Are trim percentages realistic (flag anything >80% without clear justification)?\n"
+            "2. Does rebalancing advice align with the performance findings?\n"
+            "3. Are suggested buy amounts consistent with available capital?\n"
+            "4. Do suggested new tickers / ETFs actually exist on the stated exchanges?"
+        ),
+    },
+    "analyst": {
+        "role":   "a senior equity research compliance reviewer",
+        "checks": (
+            "1. Use Google Search: do the cited institutions (Goldman, Morgan Stanley etc) "
+            "actually cover these tickers?\n"
+            "2. Are consensus ratings consistent with current market data?\n"
+            "3. Are price targets within a realistic range (not >500% upside)?\n"
+            "4. Are recent upgrade/downgrade actions verifiable and dated correctly?"
+        ),
+    },
+    "thematic": {
+        "role":   "a thematic investment research specialist",
+        "checks": (
+            "1. Are stated exposure percentages consistent with the portfolio holdings provided?\n"
+            "2. Do the recommended ETFs actually exist on stated exchanges?\n"
+            "3. Use Google Search to verify TER and AUM for cited ETFs.\n"
+            "4. Are the ETFs accessible to Kenyan investors via local brokers?"
+        ),
+    },
+    "corporate": {
+        "role":   "a corporate actions and dividend calendar specialist",
+        "checks": (
+            "1. Are all stated ex-dates and payment dates in the FUTURE?\n"
+            "2. Use Google Search: verify upcoming NSE dividend dates (SCOM, KCB, ABSA etc).\n"
+            "3. Are stated dividend amounts per share realistic?\n"
+            "4. Are earnings dates and splits verifiable?"
+        ),
+    },
+    "dividend": {
+        "role":   "a dividend income and yield analysis specialist",
+        "checks": (
+            "1. Are YTD dividend amounts plausible for the stated holdings and share counts?\n"
+            "2. Are projected annual yields realistic (flag anything >20%)?\n"
+            "3. Do stated ex-dates match known dividend calendars for NSE / NYSE?\n"
+            "4. Are MMF interest rates cited consistent with current Kenya market rates?"
+        ),
+    },
+    "health": {
+        "role":   "a quantitative risk analyst and portfolio health specialist",
+        "checks": (
+            "1. Is the Sharpe ratio plausible given stated return and volatility?\n"
+            "2. Use Google Search: what is the current Kenya 91-day T-bill rate?\n"
+            "3. Are stress test loss estimates realistic for this portfolio composition?\n"
+            "4. Are asset class allocation percentages consistent with the rebalancing agent?"
+        ),
+    },
+}
+
+
+def _prompt_sub_verifier(agent_id, agent_result, note=""):
+    """Specialist sub-verifier prompt for one specific agent."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    spec  = _SUB_VERIFIER_SPECS.get(agent_id, {
+        "role":   "a financial data quality reviewer",
+        "checks": "1. Check factual accuracy.\n2. Flag inconsistencies.",
+    })
+    data_str = json.dumps(agent_result, indent=2)
+    if len(data_str) > 15000:
+        data_str = data_str[:15000] + "... [truncated]"
+    pass_note = (note + chr(10) + chr(10)) if note else ""
+    sep = chr(10)
+    return sep.join([
+        "You are " + spec["role"] + ". Today is " + today + ".",
+        pass_note,
+        "Verify the output from the " + agent_id.upper() + " agent below.",
+        "Use Google Search to fact-check specific claims.",
+        "",
+        "VERIFICATION CRITERIA:",
+        spec["checks"],
+        "",
+        "CONFIDENCE RULES:",
+        "- HIGH: confirmed from external source",
+        "- MEDIUM: plausible, unconfirmed but no contradicting evidence",
+        "- LOW: unverifiable, suspicious, or contradicted",
+        "",
+        "AGENT OUTPUT:",
+        data_str,
+        "",
+        "Return ONLY valid JSON (no markdown):",
+        "{",
+        '  "agent": "' + agent_id + '",',
+        '  "confidence": "HIGH|MEDIUM|LOW",',
+        '  "needs_revision": false,',
+        '  "verified_claims": [{"claim":"","status":"VERIFIED|NEEDS_REVISION|INCORRECT","source":""}],',
+        '  "issues": ["specific issue 1"],',
+        '  "feedback": "specific actionable feedback for the agent",',
+        '  "reliability_score": "HIGH|MEDIUM|LOW"',
+        "}",
+    ])
+
+
+def _prompt_meta_verifier(agent_results, sub_verifier_results, note=""):
+    """Meta-verifier: cross-agent coherence after all sub-verifiers run."""
+    today    = datetime.today().strftime("%Y-%m-%d")
+    pass_note = (note + chr(10) + chr(10)) if note else ""
+    sub_summary = {
+        aid: {
+            "confidence":     r.get("confidence", "MEDIUM"),
+            "needs_revision": r.get("needs_revision", False),
+            "issues":         (r.get("issues") or [])[:3],
+        }
+        for aid, r in sub_verifier_results.items()
+    }
+    slim = {}
+    for aid in ("performance", "rebalancing", "thematic", "health"):
+        r = agent_results.get(aid, {})
+        slim[aid] = {k: v for k, v in r.items()
+                     if k in ("overall_rating", "health_score", "rebalancing_actions",
+                               "exposure_radar", "risk_metrics")}
+    slim_str = json.dumps(slim, indent=2)
+    if len(slim_str) > 12000:
+        slim_str = slim_str[:12000] + "...}"
+    sep = chr(10)
+    return sep.join([
+        "You are a chief investment officer reviewing a multi-agent portfolio analysis. Today is " + today + ".",
+        pass_note,
+        "Sub-verifiers checked each agent individually. Your job: CROSS-AGENT COHERENCE.",
+        "",
+        "SUB-VERIFIER FINDINGS:",
+        json.dumps(sub_summary, indent=2),
+        "",
+        "KEY AGENT OUTPUTS:",
+        slim_str,
+        "",
+        "CHECK:",
+        "1. Does rebalancing advice align with performance findings?",
+        "2. Does health risk score align with rebalancing urgency?",
+        "3. Does thematic exposure match analyst sector views?",
+        "4. Any contradictions — e.g., one agent says BUY, another says TRIM same ticker?",
+        "5. Is this a coherent, actionable portfolio review?",
+        "",
+        "Return ONLY valid JSON (no markdown):",
+        "{",
+        '  "overall_confidence": "HIGH|MEDIUM|LOW",',
+        '  "coherence_score": 0,',
+        '  "contradictions": [{"agents":[],"description":"","resolution":""}],',
+        '  "agent_revisions_needed": {',
+        '    "performance":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "rebalancing":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "analyst":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "thematic":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "corporate":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "dividend":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "health":{"needs_revision":false,"items":[],"feedback":""}',
+        "  },",
+        '  "reliability_scores":{',
+        '    "performance":"HIGH","rebalancing":"HIGH","analyst":"MEDIUM",',
+        '    "thematic":"MEDIUM","corporate":"HIGH","dividend":"MEDIUM","health":"HIGH"',
+        "  },",
+        '  "high_confidence_only":{',
+        '    "analyst_views":["tickers with HIGH confidence"],"dividends":[],"corporate_actions":[],"hot_picks":[]',
+        "  },",
+        '  "verifier_note": "2-3 sentence overall quality and coherence assessment"',
+        "}",
+    ])
+
+
+def _prompt_verifier(agent_results, note=""):
+    """Legacy single-pass verifier kept as fallback."""
     today = datetime.today().strftime("%Y-%m-%d")
     results_str = json.dumps(agent_results, indent=2)
-    return f"""You are a meticulous fact-checker and investment compliance reviewer. Today is {today}.
-
-Review the following outputs from 5 portfolio analysis agents and verify accuracy.
-Use Google Search to spot-check: prices, analyst ratings, dividend dates, corporate actions.
-
-AGENT OUTPUTS:
-{results_str}
-
-Check for:
-1. Factual errors (wrong prices, incorrect dates, unverifiable analyst ratings)
-2. Contradictions between agents
-3. Past-dated corporate actions or dividends presented as future
-4. Low-confidence or vague claims
-
-CONFIDENCE RULES:
-- Only mark as VERIFIED if you can confirm the claim from at least one external source
-- Mark as NEEDS_REVISION if the claim is plausible but unconfirmed
-- Mark as INCORRECT if you find contradicting evidence
-- For each NEEDS_REVISION or INCORRECT item, provide specific feedback for that agent to fix it
-
-Return ONLY valid JSON (no markdown, no code fences):
-{{
-  "overall_confidence": "HIGH|MEDIUM|LOW",
-  "verified_items": [
-    {{
-      "agent":"performance|rebalancing|analyst|thematic|corporate",
-      "claim":"specific claim being verified",
-      "status":"VERIFIED|NEEDS_REVISION|INCORRECT",
-      "confidence":"HIGH|MEDIUM|LOW",
-      "feedback":"specific correction or improvement needed (required for NEEDS_REVISION/INCORRECT)",
-      "source":"where you verified or refuted this"
-    }}
-  ],
-  "agent_revisions_needed": {{
-    "performance":  {{"needs_revision": false, "items": [], "feedback": ""}},
-    "rebalancing":  {{"needs_revision": false, "items": [], "feedback": ""}},
-    "analyst":      {{"needs_revision": false, "items": [], "feedback": ""}},
-    "thematic":     {{"needs_revision": false, "items": [], "feedback": ""}},
-    "corporate":    {{"needs_revision": false, "items": [], "feedback": ""}}
-  }},
-  "high_confidence_only": {{
-    "analyst_views":   ["only tickers where analyst data is HIGH confidence"],
-    "dividends":       ["only future dividends with HIGH confidence dates"],
-    "corporate_actions":["only HIGH confidence future actions"],
-    "hot_picks":       ["only HIGH confidence picks with verified thesis"]
-  }},
-  "reliability_scores": {{
-    "performance": "HIGH|MEDIUM|LOW",
-    "rebalancing": "HIGH|MEDIUM|LOW",
-    "analyst": "HIGH|MEDIUM|LOW",
-    "thematic": "HIGH|MEDIUM|LOW",
-    "corporate": "HIGH|MEDIUM|LOW"
-  }},
-  "verifier_note": "2-3 sentence overall quality assessment"
-}}"""
+    if len(results_str) > 40000:
+        results_str = results_str[:40000] + "...}"
+    pass_header = (note + chr(10) + chr(10)) if note else ""
+    sep = chr(10)
+    return sep.join([
+        "You are a meticulous fact-checker. Today is " + today + ".",
+        pass_header,
+        "Review these portfolio analysis agent outputs for accuracy.",
+        "Use Google Search to verify key claims.",
+        "",
+        "AGENT OUTPUTS:",
+        results_str,
+        "",
+        "Return ONLY valid JSON:",
+        "{",
+        '  "overall_confidence": "HIGH|MEDIUM|LOW",',
+        '  "agent_revisions_needed": {',
+        '    "performance":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "rebalancing":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "analyst":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "thematic":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "corporate":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "dividend":{"needs_revision":false,"items":[],"feedback":""},',
+        '    "health":{"needs_revision":false,"items":[],"feedback":""}',
+        "  },",
+        '  "reliability_scores":{"performance":"HIGH","rebalancing":"HIGH","analyst":"MEDIUM","thematic":"MEDIUM","corporate":"HIGH","dividend":"MEDIUM","health":"HIGH"},',
+        '  "verifier_note":"Overall assessment"',
+        "}",
+    ])
 
 
 def _prompt_summary(agent_results, verifier_result):
@@ -1153,6 +1306,132 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         state["dividend"]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
 
+    # ── Thematic: compute REAL exposure from held tickers before prompting ───
+    # Maps tickers to theme categories so Gemini gets accurate starting data
+    THEME_MAP = {
+        # AI & Technology
+        "QQQ":["AI & Automation","Technology"], "VOO":["Technology","S&P500"],
+        "VGT":["Technology"], "SOXX":["Semiconductors"], "ARKK":["Disruptive Tech"],
+        "NVDA":["AI & Automation","Semiconductors"], "MSFT":["AI & Automation","Technology"],
+        "GOOGL":["AI & Automation","Technology"], "META":["AI & Automation","Technology"],
+        "AAPL":["Technology"], "AMZN":["Technology","E-Commerce"],
+        # Clean Energy
+        "ICLN":["Clean Energy","Climate"], "TAN":["Clean Energy"],
+        "ENPH":["Clean Energy","Solar"], "NEE":["Clean Energy"],
+        "PLUG":["Hydrogen","Clean Energy"], "FSLR":["Clean Energy","Solar"],
+        # Healthcare
+        "XLV":["Healthcare"], "VHT":["Healthcare"], "IBB":["Biotech"],
+        "LLY":["Healthcare","Biotech"], "JNJ":["Healthcare"],
+        # Africa & Emerging Markets
+        "EWZ":["Emerging Markets"], "EEM":["Emerging Markets"],
+        "AFK":["Africa"], "NGE":["Africa","Nigeria"],
+        "SCOM":["Africa","Kenya","Telecom"], "KCB":["Africa","Kenya","Banking"],
+        "ABSA":["Africa","Kenya","Banking"], "EQTY":["Africa","Kenya","Banking"],
+        "BAMB":["Africa","Kenya","Manufacturing"],
+        # Commodities & Inflation hedge
+        "GLD":["Gold","Commodities"], "SLV":["Silver","Commodities"],
+        "PDBC":["Commodities"], "DJP":["Commodities"],
+        "BTC":["Crypto","Digital Assets"], "ETH":["Crypto","Digital Assets"],
+        # Infrastructure & Real Estate
+        "VNQ":["Real Estate","REITs"], "REET":["Real Estate","REITs"],
+        "PAVE":["Infrastructure"],
+        # Defence & Geopolitics
+        "ITA":["Defence"], "XAR":["Defence"], "LMT":["Defence"],
+        # Bonds/Fixed Income
+        "BND":["Bonds","Fixed Income"], "AGG":["Bonds","Fixed Income"],
+        "TLT":["Long-Duration Bonds"],
+    }
+
+    def _compute_thematic_exposure():
+        """Compute real % exposure per theme from actual portfolio holdings."""
+        holdings    = portfolio.get("holdings", [])
+        total_value = portfolio.get("total_market") or portfolio.get("total_cost") or 1
+        if not total_value or total_value == 0: total_value = 1
+
+        theme_exposure = {}  # theme → KES value
+        unclassified   = []
+
+        for h in holdings:
+            ticker  = h["ticker"].upper()
+            mkt_val = h.get("market_value_kes") or h.get("total_cost_kes") or 0
+            themes  = THEME_MAP.get(ticker, [])
+            if themes:
+                for theme in themes:
+                    theme_exposure[theme] = theme_exposure.get(theme, 0) + mkt_val
+            else:
+                # Classify by exchange as a fallback
+                exch = h.get("exchange","")
+                if exch == "NSE":
+                    for th in ["Africa","Kenya"]:
+                        theme_exposure[th] = theme_exposure.get(th, 0) + mkt_val
+                elif exch == "CRYPTO":
+                    for th in ["Crypto","Digital Assets"]:
+                        theme_exposure[th] = theme_exposure.get(th, 0) + mkt_val
+                else:
+                    unclassified.append(ticker)
+
+        # Convert to %
+        return {
+            theme: round(val / total_value * 100, 1)
+            for theme, val in theme_exposure.items()
+        }, unclassified
+
+    def _run_thematic_with_exposure():
+        """Thematic agent with real computed exposure injected into prompt."""
+        state["thematic"]["status"]  = "running"
+        state["thematic"]["started"] = datetime.utcnow().isoformat()
+        _save_job(job_id, user_id, state)
+        try:
+            real_exposure, unclassified = _compute_thematic_exposure()
+            # Build exposure summary string
+            exp_lines = sorted(real_exposure.items(), key=lambda x:-x[1])
+            exp_str   = chr(10).join(
+                f"  {theme}: {pct}% of portfolio" for theme, pct in exp_lines
+            ) or "  No mapped exposure yet"
+            uncl_str  = ", ".join(unclassified) or "none"
+
+            # Build enhanced context
+            exposure_context = (
+                ctx + chr(10) + chr(10) +
+                "COMPUTED THEMATIC EXPOSURE (from actual holdings, use these EXACT percentages):" + chr(10) +
+                exp_str + chr(10) +
+                "Unclassified tickers (no theme mapping): " + uncl_str + chr(10) +
+                "IMPORTANT: Use the computed percentages above as current_exposure_pct values." + chr(10) +
+                "Do NOT invent or estimate exposure percentages — use the ones provided."
+            )
+            prompt = _prompt_thematic(exposure_context)
+            text   = _gemini(api_key, prompt, timeout=90)
+            result = _extract_json(text)
+            # Inject real percentages into result (override any Gemini invention)
+            for trend in result.get("megatrends", []):
+                theme_key = trend.get("theme","")
+                # Find closest matching theme in real_exposure
+                matched_pct = 0
+                for exp_theme, pct in real_exposure.items():
+                    if exp_theme.lower() in theme_key.lower() or theme_key.lower() in exp_theme.lower():
+                        matched_pct = max(matched_pct, pct)
+                if matched_pct:
+                    trend["current_exposure_pct"] = matched_pct
+                    trend["current_exposure"] = (
+                        "ADEQUATE" if matched_pct >= (trend.get("target_allocation_pct") or 10) * 0.8
+                        else "LOW" if matched_pct > 0
+                        else "NONE"
+                    )
+            # Also fix radar
+            for r in result.get("exposure_radar", []):
+                theme_key = r.get("theme","")
+                for exp_theme, pct in real_exposure.items():
+                    if exp_theme.lower() in theme_key.lower() or theme_key.lower() in exp_theme.lower():
+                        r["current_pct"] = max(r.get("current_pct",0), pct)
+                        break
+            state["thematic"]["status"] = "done"
+            state["thematic"]["result"] = result
+        except Exception as e:
+            state["thematic"]["status"] = "error"
+            state["thematic"]["error"]  = str(e)
+        state["thematic"]["finished"] = datetime.utcnow().isoformat()
+        _save_job(job_id, user_id, state)
+
     # ── Agents 1-7 in parallel ────────────────────────────────────────────────
     # Analyst runs per-ticker in sub-threads (multithreaded)
     def run_analyst_multithreaded():
@@ -1214,8 +1493,30 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         for t in batch_threads: t.start()
         for t in batch_threads: t.join(timeout=120)
 
-        # Merge per-ticker results into analyst format
-        analyst_views = list(per_ticker_results.values())
+        # Include ALL held tickers — covered ones have full data, others marked N/A
+        analyst_views = []
+        for h in unique_holdings:
+            ticker = h["ticker"].upper()
+            if ticker in per_ticker_results:
+                analyst_views.append(per_ticker_results[ticker])
+            else:
+                # Placeholder for tickers with no analyst coverage found
+                analyst_views.append({
+                    "ticker":          ticker,
+                    "exchange":        h.get("exchange",""),
+                    "consensus":       "N/A",
+                    "sources_count":   0,
+                    "sources_list":    [],
+                    "avg_price_target":"",
+                    "upside_pct":      0,
+                    "key_thesis":      "No analyst coverage found",
+                    "bull_case":       "",
+                    "bear_case":       "",
+                    "recent_changes":  [],
+                    "data_freshness":  "",
+                    "skip":            True,
+                    "no_coverage":     True,
+                })
         # Also run a single call for hot picks
         hot_picks = []
         try:
@@ -1250,7 +1551,7 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         threading.Thread(target=run_agent,                 args=("performance", _prompt_performance, ctx)),
         threading.Thread(target=run_agent,                 args=("rebalancing", _prompt_rebalancing, ctx)),
         threading.Thread(target=run_analyst_multithreaded, args=()),
-        threading.Thread(target=run_agent,                 args=("thematic",    _prompt_thematic,    ctx)),
+        threading.Thread(target=_run_thematic_with_exposure, args=()),
         threading.Thread(target=run_agent,                 args=("corporate",   _prompt_corporate, tickers_str)),
         threading.Thread(target=_run_dividend_batched,      args=()),
         threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio, savings)),
@@ -1263,7 +1564,90 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         aid: state[aid].get("result", {})
         for aid in ("performance","rebalancing","analyst","thematic","corporate","dividend","health")
     }
-    run_agent("verifier", _prompt_verifier, agent_results)
+    # ── Agent 8: Parallel sub-verifiers + meta-verifier ─────────────────────
+    state["verifier"]["status"] = "running"
+    state["verifier"]["pass"]   = 1
+    _save_job(job_id, user_id, state)
+
+    sub_results = {}
+    sub_lock    = threading.Lock()
+    sub_sem     = threading.Semaphore(6)  # max 6 concurrent
+
+    def _run_sub_verifier(aid):
+        with sub_sem:
+            try:
+                p = _prompt_sub_verifier(aid, agent_results.get(aid, {}))
+                t = _gemini(api_key, p, timeout=90)
+                r = _extract_json(t)
+                with sub_lock:
+                    sub_results[aid] = r
+            except Exception as e:
+                with sub_lock:
+                    sub_results[aid] = {
+                        "agent": aid, "confidence": "MEDIUM",
+                        "needs_revision": False, "feedback": str(e),
+                        "reliability_score": "MEDIUM", "issues": [],
+                    }
+
+    sub_threads = [
+        threading.Thread(target=_run_sub_verifier, args=(aid,), daemon=True)
+        for aid in ALL_REVISIONABLE
+    ]
+    for t in sub_threads: t.start()
+    for t in sub_threads: t.join(timeout=120)
+
+    # Meta-verifier: cross-agent coherence
+    try:
+        meta_prompt  = _prompt_meta_verifier(agent_results, sub_results)
+        meta_text    = _gemini(api_key, meta_prompt, timeout=90)
+        meta_result  = _extract_json(meta_text)
+    except Exception as e:
+        meta_result = {
+            "overall_confidence": "MEDIUM",
+            "agent_revisions_needed": {
+                aid: {
+                    "needs_revision": sub_results.get(aid, {}).get("needs_revision", False),
+                    "items":    sub_results.get(aid, {}).get("issues", []),
+                    "feedback": sub_results.get(aid, {}).get("feedback", ""),
+                }
+                for aid in ALL_REVISIONABLE
+            },
+            "reliability_scores": {
+                aid: sub_results.get(aid, {}).get("reliability_score", "MEDIUM")
+                for aid in ALL_REVISIONABLE
+            },
+            "verifier_note": "Meta-verification failed (" + str(e) + "); sub-verifier results used.",
+            "coherence_score": 0,
+        }
+
+    # Merge sub results into meta
+    meta_result["sub_verifier_results"] = {
+        aid: {
+            "confidence":     sub_results.get(aid, {}).get("confidence", "MEDIUM"),
+            "issues":         (sub_results.get(aid, {}).get("issues") or [])[:3],
+            "needs_revision": sub_results.get(aid, {}).get("needs_revision", False),
+        }
+        for aid in ALL_REVISIONABLE
+    }
+    # Propagate sub-verifier revision flags not caught by meta
+    meta_rev = meta_result.get("agent_revisions_needed", {})
+    for aid in ALL_REVISIONABLE:
+        sr = sub_results.get(aid, {})
+        if sr.get("needs_revision") and not meta_rev.get(aid, {}).get("needs_revision"):
+            meta_rev.setdefault(aid, {})["needs_revision"] = True
+            meta_rev[aid]["feedback"] = (
+                meta_rev.get(aid, {}).get("feedback", "") + " " +
+                sr.get("feedback", "")
+            ).strip()
+            meta_rev[aid]["items"] = list({
+                *(meta_rev.get(aid, {}).get("items") or []),
+                *(sr.get("issues") or []),
+            })[:5]
+    meta_result["agent_revisions_needed"] = meta_rev
+
+    state["verifier"]["status"] = "done"
+    state["verifier"]["result"] = meta_result
+    _save_job(job_id, user_id, state)
 
     # ── Verifier: resend flagged items to agents in PARALLEL threads ─────────
     verifier_result = state["verifier"].get("result", {})
@@ -1323,76 +1707,100 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             state[agent_id]["revision_error"] = str(e)
         _save_job(job_id, user_id, state)
 
-    # Spawn one thread per flagged agent - all revisions run in parallel
-    revision_threads = []
-    for agent_id in ALL_REVISIONABLE:
-        rev = revisions.get(agent_id, {})
-        if not rev.get("needs_revision"):
-            continue
-        feedback = rev.get("feedback", "")
-        items    = rev.get("items", [])
-        if not feedback and not items:
-            continue
-        t = threading.Thread(
-            target=_revise_agent,
-            args=(agent_id, feedback, items),
-            daemon=True,
+    # ── Iterative verify → revise loop (max 3 retries per agent) ────────────
+    MAX_RETRIES  = 3
+    retry_counts = {aid: 0 for aid in ALL_REVISIONABLE}  # track per-agent retries
+    pass_number  = 1
+
+    # Start with first-pass verifier result
+    verifier_result = state["verifier"].get("result", {})
+    all_revised_aids = []
+
+    while True:
+        # Check which agents still need revision and haven't hit max retries
+        revisions = verifier_result.get("agent_revisions_needed", {})
+        to_revise = []
+        for aid in ALL_REVISIONABLE:
+            rev = revisions.get(aid, {})
+            if rev.get("needs_revision") and (rev.get("feedback") or rev.get("items")):
+                if retry_counts[aid] < MAX_RETRIES:
+                    to_revise.append((aid, rev.get("feedback",""), rev.get("items",[])))
+
+        if not to_revise:
+            break  # All agents pass or hit max retries
+
+        # Spawn parallel revision threads for all agents that need it this pass
+        rev_threads = []
+        for aid, feedback, items in to_revise:
+            retry_counts[aid] += 1
+            state[aid]["retry_count"] = retry_counts[aid]
+            t = threading.Thread(
+                target=_revise_agent,
+                args=(aid, feedback, items),
+                daemon=True,
+            )
+            rev_threads.append(t)
+            t.start()
+            all_revised_aids.append(aid)
+
+        for t in rev_threads:
+            t.join(timeout=120)
+
+        # Refresh agent_results with latest revisions
+        agent_results = {
+            aid: state[aid].get("result", {})
+            for aid in ALL_REVISIONABLE
+        }
+
+        # Run verifier again on revised outputs
+        pass_number += 1
+        state["verifier"]["status"] = "running"
+        state["verifier"]["pass"]   = pass_number
+        _save_job(job_id, user_id, state)
+
+        revised_this_pass = [aid for aid, _, _ in to_revise]
+        retry_note = (
+            "VERIFICATION PASS " + str(pass_number) + ". "
+            "Agents revised this pass: " + ", ".join(revised_this_pass) + ". "
+            "Retry counts: " + ", ".join(f"{a}={retry_counts[a]}" for a in revised_this_pass) + ". "
+            "Only flag agents still failing. Agents at max retries (" + str(MAX_RETRIES) + ") must be accepted as-is."
         )
-        revision_threads.append(t)
-        t.start()
+        try:
+            v_prompt = _prompt_verifier(agent_results, note=retry_note)
+            v_text   = _gemini(api_key, v_prompt, timeout=90)
+            v_result = _extract_json(v_text)
 
-    # Summary MUST wait for ALL revision threads before running
-    for t in revision_threads:
-        t.join(timeout=120)
+            # Agents that hit max retries — force-clear needs_revision
+            needs_rev = v_result.get("agent_revisions_needed", {})
+            for aid in ALL_REVISIONABLE:
+                if retry_counts[aid] >= MAX_RETRIES and needs_rev.get(aid, {}).get("needs_revision"):
+                    needs_rev[aid]["needs_revision"] = False
+                    needs_rev[aid]["forced_accept"]  = True
+            v_result["agent_revisions_needed"] = needs_rev
 
-    # Refresh agent_results with the latest revised outputs
+            first_result = state["verifier"].get("result", {})
+            state["verifier"]["result"] = {
+                **v_result,
+                "passes_completed":    pass_number,
+                "revised_agents":      list(set(all_revised_aids)),
+                "retry_counts":        {k:v for k,v in retry_counts.items() if v>0},
+                "forced_accepted":     [a for a in ALL_REVISIONABLE if retry_counts[a]>=MAX_RETRIES],
+                "first_pass_history":  first_result.get("agent_revisions_needed", {}),
+            }
+            state["verifier"]["status"] = "done"
+            verifier_result = state["verifier"]["result"]
+        except Exception as e:
+            state["verifier"]["status"] = "done"
+            state["verifier"]["loop_error"] = str(e)
+            break
+
+        _save_job(job_id, user_id, state)
+
+    # Final agent_results for summary
     agent_results = {
         aid: state[aid].get("result", {})
         for aid in ALL_REVISIONABLE
     }
-
-    # ── Verifier second pass: re-verify using the REVISED data ───────────────
-    # Only run a second pass if any revisions actually happened
-    if revision_threads:
-        state["verifier"]["status"]  = "running"
-        state["verifier"]["pass"]    = 2
-        _save_job(job_id, user_id, state)
-
-        # Build second-pass prompt: compare original vs revised findings
-        revised_aids = [
-            aid for aid in ALL_REVISIONABLE
-            if state.get(aid, {}).get("revised")
-        ]
-        second_pass_note = (
-            "SECOND PASS VERIFICATION. "
-            "The following agents were revised based on your first-pass feedback: "
-            + ", ".join(revised_aids) + ". "
-            "Review the REVISED outputs below and confirm whether issues were resolved. "
-            "Only flag items that are STILL problematic after revision."
-        )
-        try:
-            second_prompt = _prompt_verifier(agent_results, note=second_pass_note)
-            second_text   = _gemini(api_key, second_prompt, timeout=90)
-            second_result = _extract_json(second_text)
-
-            # Merge: take second-pass reliability scores and verified items,
-            # keep first-pass needs_revision history for reference
-            first_result = state["verifier"].get("result", {})
-            merged = {
-                **second_result,
-                "first_pass_revisions": first_result.get("agent_revisions_needed", {}),
-                "revised_agents": revised_aids,
-                "passes_completed": 2,
-            }
-            state["verifier"]["status"] = "done"
-            state["verifier"]["result"] = merged
-        except Exception as e:
-            # Keep first-pass result if second pass fails
-            state["verifier"]["status"]       = "done"
-            state["verifier"]["second_pass_error"] = str(e)
-
-        _save_job(job_id, user_id, state)
-
     verifier_result = state["verifier"].get("result", {})
 
     # ── Agent 9: Summary — uses latest agent data + verified findings ─────────

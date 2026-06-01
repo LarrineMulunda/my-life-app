@@ -1611,37 +1611,72 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
   </div>` : ""}
 
   <!-- ⑥ ANALYST INTELLIGENCE ─────────────────────────────────────────── -->
-  <div class="review-grid-2">
-    <!-- Per-ticker analyst views -->
-    ${filteredViews.length ? `
-    <div class="panel">
-      <div class="panel-title">🔍 Analyst Intelligence</div>
-      ${filteredViews.slice(0,8).map(a=>`
-        <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.2rem">
-            <span style="font-size:.84rem;color:var(--text);font-weight:500">${a.ticker} <span class="hc-exchange-badge" style="font-size:.62rem">${a.exchange||""}</span></span>
-            <span class="${a.consensus==="BUY"?"badge-ok":a.consensus==="SELL"?"badge-err":"badge-info"}" style="font-size:.62rem">${a.consensus||"—"}</span>
-          </div>
-          ${a.key_thesis?`<div style="font-size:.76rem;color:var(--text2)">${a.key_thesis}</div>`:""}
-          ${a.avg_price_target?`<div style="font-size:.68rem;color:var(--text3);margin-top:.15rem">Target: ${a.avg_price_target} · ${a.upside_pct>0?"↑":"↓"} ${Math.abs(a.upside_pct||0)}% upside</div>`:""}
-        </div>`).join("")}
-    </div>` : ""}
-    <!-- Hot picks -->
-    ${filteredPicks.length ? `
-    <div class="panel">
-      <div class="panel-title">🔥 Hot Picks <small style="font-size:.62rem;color:var(--text3);font-weight:normal">(max 4)</small></div>
-      ${filteredPicks.map(p=>`
-        <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.2rem">
-            <span style="font-size:.84rem;color:var(--gold2);font-weight:500">${p.ticker} <span class="hc-exchange-badge" style="font-size:.62rem">${p.exchange||""}</span></span>
-            <span style="font-size:.68rem;color:var(--text3)">${p.source||""}</span>
-          </div>
-          ${p.thesis?`<div style="font-size:.76rem;color:var(--text2)">${p.thesis}</div>`:""}
-          ${p.catalyst?`<div style="font-size:.68rem;color:var(--text3);margin-top:.15rem">Catalyst: ${p.catalyst}</div>`:""}
-          ${p.price_target?`<div style="font-size:.68rem;color:var(--gold2);font-family:var(--font-mono);margin-top:.1rem">Target: ${p.price_target}</div>`:""}
-        </div>`).join("")}
-    </div>` : ""}
-  </div>
+  ${(() => {
+    const covered = (analyst.analyst_views||[]).filter(a => !a.skip && !a.no_coverage && a.key_thesis);
+    if (!covered.length) return "";
+    return `<div class="panel">
+      <div class="panel-title" style="justify-content:space-between">
+        <span>🔍 Analyst Intelligence</span>
+        <span style="font-family:var(--font-mono);font-size:.65rem;color:var(--text3)">
+          ${covered.length} of ${(analyst.analyst_views||[]).length} tickers covered
+        </span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" style="font-size:.76rem">
+          <thead><tr>
+            <th>Ticker</th>
+            <th class="hide-xs">Exch</th>
+            <th>Consensus</th>
+            <th class="num-col hide-sm">Target</th>
+            <th class="num-col hide-sm">Upside</th>
+            <th>Thesis</th>
+          </tr></thead>
+          <tbody>
+            ${covered.map(a => {
+              const cc = a.consensus==="BUY"?"badge-ok":a.consensus==="SELL"?"badge-err":a.consensus==="HOLD"?"badge-info":"badge-info";
+              return `<tr>
+                <td class="wht mo">${a.ticker}</td>
+                <td class="hide-xs"><span class="hc-exchange-badge">${a.exchange||""}</span></td>
+                <td><span class="${cc}" style="font-size:.62rem">${a.consensus||"—"}</span></td>
+                <td class="num-col hide-sm" style="font-family:var(--font-mono);font-size:.7rem">${a.avg_price_target||"—"}</td>
+                <td class="num-col hide-sm" style="font-family:var(--font-mono);font-size:.7rem;color:${(a.upside_pct||0)>0?"var(--green)":(a.upside_pct||0)<0?"var(--red)":"var(--text3)"}">
+                  ${a.upside_pct!=null?(a.upside_pct>0?"+":"")+a.upside_pct+"%":"—"}
+                </td>
+                <td style="font-size:.74rem;color:var(--text2)">
+                  ${a.key_thesis||""}
+                  ${a.recent_changes?.length?`
+                    <div style="font-size:.65rem;color:var(--text3);margin-top:.1rem">
+                      ${a.recent_changes.slice(0,1).map(c=>`${c.action||""} · ${c.institution||c.analyst||""} · ${c.date||""}`).join("")}
+                    </div>`:""}
+                </td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  })()}
+
+  <!-- Hot Picks -->
+  ${filteredPicks.length ? `
+  <div class="panel">
+    <div class="panel-title">🔥 Hot Picks <small style="font-size:.62rem;color:var(--text3);font-weight:normal">(max 4 · external picks)</small></div>
+    ${filteredPicks.map(p=>`
+      <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.2rem;flex-wrap:wrap;gap:.3rem">
+          <span style="font-size:.84rem;color:var(--gold2);font-weight:500">${p.ticker}
+            <span class="hc-exchange-badge" style="font-size:.6rem">${p.exchange||""}</span>
+          </span>
+          <span style="font-size:.68rem;color:var(--text3)">${p.source||""}</span>
+        </div>
+        ${p.thesis?`<div style="font-size:.76rem;color:var(--text2);margin-bottom:.2rem">${p.thesis}</div>`:""}
+        <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+          ${p.catalyst?`<div style="font-size:.68rem;color:var(--text3)">Catalyst: ${p.catalyst}</div>`:""}
+          ${p.price_target?`<div style="font-size:.68rem;color:var(--gold2);font-family:var(--font-mono)">Target: ${p.price_target}</div>`:""}
+          ${p.time_horizon?`<div style="font-size:.68rem;color:var(--text3)">${p.time_horizon}</div>`:""}
+        </div>
+      </div>`).join("")}
+  </div>` : ""}
 
   <!-- ⑦ THEMATIC (with radar inline) ─────────────────────────────────── -->
   ${(thematic.megatrends?.length||thematic.exposure_radar?.length) ? `
@@ -1767,15 +1802,41 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
   </div>
 
   <!-- ⑩ VERIFICATION FOOTER ──────────────────────────────────────── -->
-  ${verifier.verifier_note ? `
   <div style="background:rgba(92,158,106,.04);border:1px solid rgba(92,158,106,.2);border-radius:10px;padding:.8rem 1rem;margin-top:.5rem">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem;margin-bottom:.3rem">
-      <span style="font-size:.75rem;color:var(--green)">✅ ${verifier.passes_completed===2?"2-Pass Verification":"Verification"} Complete</span>
-      ${verifier.overall_confidence?`<span style="font-family:var(--font-mono);font-size:.65rem;color:${rc(verifier.overall_confidence)}">Confidence: ${verifier.overall_confidence}</span>`:""}
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem;margin-bottom:.4rem">
+      <span style="font-size:.75rem;color:var(--green)">
+        ✅ Verification${verifier.passes_completed>1?" · "+verifier.passes_completed+" passes":""}
+      </span>
+      ${verifier.overall_confidence?`<span style="font-family:var(--font-mono);font-size:.65rem;color:${rc(verifier.overall_confidence)}">Overall: ${verifier.overall_confidence}</span>`:""}
+      ${verifier.coherence_score!=null?`<span style="font-family:var(--font-mono);font-size:.65rem;color:var(--text3)">Coherence: ${verifier.coherence_score}/10</span>`:""}
     </div>
-    <div style="font-size:.78rem;color:var(--text2)">${verifier.verifier_note}</div>
-    ${verifier.revised_agents?.length?`<div style="font-size:.65rem;color:var(--gold2);margin-top:.2rem">Revised after first pass: ${verifier.revised_agents.join(", ")}</div>`:""}
-  </div>` : ""}
+    ${verifier.verifier_note?`<div style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">${verifier.verifier_note}</div>`:""}
+    <!-- Sub-verifier grid -->
+    ${Object.keys(verifier.sub_verifier_results||{}).length ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:.3rem;margin-bottom:.4rem">
+        ${Object.entries(verifier.sub_verifier_results||{}).map(([aid,sv])=>`
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.3rem .5rem;font-size:.62rem">
+            <div style="color:var(--text3);margin-bottom:.1rem;text-transform:capitalize">${aid}</div>
+            <div style="font-family:var(--font-mono);color:${sv.confidence==="HIGH"?"var(--green)":sv.confidence==="MEDIUM"?"var(--gold)":"var(--red)"}">
+              ${sv.confidence||"?"}
+              ${sv.needs_revision?` ↻`:""}
+            </div>
+          </div>`).join("")}
+      </div>` : ""}
+    <!-- Contradictions found by meta-verifier -->
+    ${(verifier.contradictions||[]).length ? `
+      <div style="font-size:.72rem;color:var(--gold2);margin-bottom:.3rem">
+        ${verifier.contradictions.map(c=>`⚠ ${c.description||""}`).join(" · ")}
+      </div>` : ""}
+    <!-- Retry detail -->
+    ${Object.keys(verifier.retry_counts||{}).length ? `
+      <div style="display:flex;flex-wrap:wrap;gap:.3rem">
+        ${Object.entries(verifier.retry_counts||{}).map(([aid,n])=>`
+          <span style="font-family:var(--font-mono);font-size:.58rem;padding:.1rem .35rem;border-radius:4px;background:var(--bg3)">
+            ${aid} ↻${n}/3${(verifier.forced_accepted||[]).includes(aid)?" ✓":""}
+          </span>`).join("")}
+      </div>` : ""}
+  </div>
 
   `;
 
