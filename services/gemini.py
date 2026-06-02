@@ -5,6 +5,7 @@ gemini.py — Gemini AI service.
 - generate_review: weekly portfolio review with AI analysis
 """
 import json
+import os
 import re
 from datetime import datetime
 
@@ -14,8 +15,9 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
-              "gemini-2.0-flash:generateContent")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
+GEMINI_URL   = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{GEMINI_MODEL}:generateContent")
 
 # Exchange → default currency
 _EXCUR = {

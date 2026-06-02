@@ -134,51 +134,120 @@ def _get_linked_value(conn, link_type, link_label, user_id, fx_rates):
 
 def _calc_progress(goal, contributions, fx_rates, auto_value_kes=None):
     """
-    auto_value_kes: if goal is linked to savings label or stocks,
-    pass the current auto-read KES value here to override manual contributions.
+    Calculate goal progress with a realistic monthly saving rate.
+
+    monthly_rate: uses the last 3 months of actual contributions
+                  (not total-saved / months-since-creation which is misleading
+                   when the user was inactive early on).
+    monthly_needed: remaining / months_left  — how much to add per month
+                    to hit the target on time.
+    For linked goals (auto_value_kes), monthly_rate reflects recent value
+    growth rather than manual contribution amounts.
     """
     today      = date.today()
     created    = date.fromisoformat(str(goal["created_date"])[:10])
     target_kes = _to_kes(goal["target_amount"], goal["target_currency"], fx_rates)
+
+    # ── Current balance ───────────────────────────────────────────────────────
     if auto_value_kes is not None:
         saved_kes = float(auto_value_kes)
+        # For linked goals, monthly_rate = total growth / months active
+        # Use contributions as growth events if available, else fall back to
+        # saved / months-since-creation capped to last 6 months
+        cutoff_6m = today - timedelta(days=183)
+        recent_contribs = [
+            c for c in contributions
+            if date.fromisoformat(str(c["date"])[:10]) >= cutoff_6m
+        ]
+        if recent_contribs:
+            # Sum absolute amounts of recent additions (deposits only)
+            recent_kes = sum(
+                _to_kes(c["amount"], c["currency"], fx_rates)
+                for c in recent_contribs
+            )
+            months_recent = max(0.1, (today - cutoff_6m).days / 30.44)
+            monthly = recent_kes / months_recent
+        else:
+            # No contribution history — estimate from total / months active
+            months_el = max(0.1, (today - created).days / 30.44)
+            monthly   = saved_kes / months_el
     else:
-        saved_kes = sum(_to_kes(c["amount"], c["currency"], fx_rates) for c in contributions)
-    pct        = round(saved_kes / target_kes * 100, 1) if target_kes else 0
-    remaining  = max(0.0, target_kes - saved_kes)
-    months_el  = max(0.1, (today - created).days / 30.44)
-    monthly    = saved_kes / months_el
+        saved_kes = sum(
+            _to_kes(c["amount"], c["currency"], fx_rates) for c in contributions
+        )
+        # ── FIXED: use last 3 months of contributions, not all-time average ──
+        cutoff_3m = today - timedelta(days=92)   # ~3 months
+        recent_contribs = [
+            c for c in contributions
+            if date.fromisoformat(str(c["date"])[:10]) >= cutoff_3m
+        ]
+        if recent_contribs:
+            # Actual amount contributed in last 3 months / 3
+            recent_kes = sum(
+                _to_kes(c["amount"], c["currency"], fx_rates)
+                for c in recent_contribs
+            )
+            months_recent = max(0.1, (today - cutoff_3m).days / 30.44)
+            monthly = recent_kes / months_recent
+        elif contributions:
+            # No recent contributions — find the period between first and last
+            dates = sorted(date.fromisoformat(str(c["date"])[:10]) for c in contributions)
+            span_days = max(1, (dates[-1] - dates[0]).days)
+            span_months = max(0.1, span_days / 30.44)
+            total_kes = sum(_to_kes(c["amount"], c["currency"], fx_rates) for c in contributions)
+            monthly = total_kes / span_months
+        else:
+            monthly = 0.0
+
+    pct       = round(saved_kes / target_kes * 100, 1) if target_kes else 0
+    remaining = max(0.0, target_kes - saved_kes)
 
     tdate = months_left = days_left = needed = None
     if goal.get("target_date"):
         try:
-            tdate     = date.fromisoformat(str(goal["target_date"])[:10])
-            days_left = (tdate - today).days
+            tdate       = date.fromisoformat(str(goal["target_date"])[:10])
+            days_left   = (tdate - today).days
             months_left = max(0.0, days_left / 30.44)
-            if months_left > 0: needed = round(remaining / months_left, 2)
-        except Exception: pass
+            # monthly_needed = how much to contribute per month to hit target
+            if months_left > 0:
+                needed = round(remaining / months_left, 2)
+        except Exception:
+            pass
 
+    # Projected completion at current monthly rate
     proj_date = proj_months = None
     if monthly > 0 and remaining > 0:
         proj_months = remaining / monthly
         proj_date   = (today + timedelta(days=int(proj_months * 30.44))).isoformat()
 
-    if pct >= 100:           status = "completed"
+    # Status
+    if pct >= 100:
+        status = "completed"
     elif tdate and days_left is not None:
-        if days_left < 0:    status = "overdue"
-        elif needed and monthly >= needed * 0.9: status = "on_track"
-        elif needed and monthly >= needed * 0.5: status = "behind"
-        else:                status = "at_risk"
-    else:                    status = "in_progress"
+        if days_left < 0:
+            status = "overdue"
+        elif needed and monthly >= needed * 0.9:
+            status = "on_track"
+        elif needed and monthly >= needed * 0.5:
+            status = "behind"
+        else:
+            status = "at_risk"
+    else:
+        status = "in_progress"
 
     return {
-        "target_kes": round(target_kes,2), "saved_kes": round(saved_kes,2),
-        "remaining_kes": round(remaining,2), "pct_complete": min(100.0, pct),
-        "monthly_rate": round(monthly,2), "monthly_needed": needed,
-        "projected_date": proj_date,
-        "projected_months": round(proj_months,1) if proj_months else None,
-        "days_left": days_left, "months_left": round(months_left,1) if months_left else None,
-        "status": status, "contributions_count": len(contributions),
+        "target_kes":       round(target_kes, 2),
+        "saved_kes":        round(saved_kes, 2),
+        "remaining_kes":    round(remaining, 2),
+        "pct_complete":     min(100.0, pct),
+        "monthly_rate":     round(monthly, 2),
+        "monthly_needed":   needed,
+        "projected_date":   proj_date,
+        "projected_months": round(proj_months, 1) if proj_months else None,
+        "days_left":        days_left,
+        "months_left":      round(months_left, 1) if months_left else None,
+        "status":           status,
+        "contributions_count": len(contributions),
         "last_contribution": max((c["date"] for c in contributions), default=None),
     }
 

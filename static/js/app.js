@@ -69,7 +69,18 @@ async function loadAll() {
   if (d && d.ok) {
     // Pre-populate cache so individual load functions return instantly
     const now = Date.now();
-    if (d.stocks)   _cache["/api/stocks"]               = {data: d.stocks, ts: now};
+    if (d.stocks) {
+      // d.stocks is the stocks summary (holdings + totals)
+      // Ensure lots are included so renderLotsTable works from cache
+      const stocksData = {
+        ...d.stocks,
+        lots:        d.lots        || d.stocks.lots        || [],
+        active_lots: d.lots        || d.stocks.active_lots || [],
+        sales:       d.stocks.sales || [],
+        price_history: d.stocks.price_history || [],
+      };
+      _cache["/api/stocks"] = {data: stocksData, ts: now};
+    }
     if (d.overview) _cache["/api/investments/overview"]  = {data: d.overview, ts: now};
     if (d.lots)     _cache["/api/stocks/lots"]           = {data: {lots: d.lots}, ts: now};
     // Reconstruct savings response to match /api/savings exact structure
@@ -145,7 +156,7 @@ async function loadOverview() {
             <div class="ac-nums">
               <span class="ac-value">${fmt(v.value)}</span>
               <span class="ac-pct">${pct}%</span>
-              ${v.gain !== 0 ? `<span class="ac-gain ${gainCls}">${sign(v.gain)}${fmt(Math.abs(v.gain))}</span>` : ""}
+              ${(v.gain && !isNaN(v.gain) && v.gain !== 0) ? `<span class="ac-gain ${gainCls}">${sign(v.gain)}${fmt(Math.abs(v.gain))}</span>` : ""}
             </div>
           </div>`;
         }).join("")}
@@ -384,13 +395,17 @@ async function loadStocks() {
   if (sb) sb.innerHTML = (d.sales||[]).length ? d.sales.map(s => {
     const gain = (s.sale_price - s.purchase_price) * s.shares;
     const pos = gain >= 0;
-    return `<tr><td>${fmtDate(s.date)}</td><td class="wht mo">${s.ticker}</td>
-      <td><span class="hc-exchange-badge">${s.exchange}</span></td>
-      <td class="mo">${s.shares.toLocaleString()}</td>
-      <td class="mo">${s.purchase_price.toFixed(2)}</td>
-      <td class="mo">${s.sale_price.toFixed(2)}</td>
-      <td class="mo ${pos?"dep":"wit"}">${sign(gain)}${fmt(gain)}</td>
-      <td>${s.broker||"—"}</td>
+    const cur = s.currency || "KES";
+    const gainKes = s.gain_loss_kes != null ? s.gain_loss_kes : gain;
+    return `<tr>
+      <td style="font-size:.76rem">${fmtDate(s.date)}</td>
+      <td class="wht mo">${s.ticker}</td>
+      <td class="hide-xs"><span class="hc-exchange-badge">${s.exchange}</span></td>
+      <td class="mo" style="font-family:var(--font-mono);font-size:.76rem">${(+s.shares).toLocaleString()}</td>
+      <td class="num-col hide-sm" style="font-family:var(--font-mono);font-size:.74rem">${s.purchase_price.toFixed(2)}</td>
+      <td class="num-col mo" style="font-family:var(--font-mono);font-size:.74rem">${s.sale_price.toFixed(2)}</td>
+      <td class="num-col mo ${pos?"pos":"neg"}" style="font-weight:500">${sign(gainKes)}${fmt(Math.abs(gainKes))}</td>
+      <td class="hide-sm" style="font-size:.74rem">${s.broker||"—"}</td>
       <td><button class="btn-icon" onclick="deleteSale(${s.id})">✕</button></td></tr>`;
   }).join("") : `<tr><td colspan="9" class="empty">No sales recorded yet.</td></tr>`;
 }
@@ -531,7 +546,8 @@ async function addLot() {
   if (d.ok) {
     toast(`${shares} × ${ticker} @ ${price} added ✓`);
     ["lot-ticker","lot-shares","lot-price","lot-broker"].forEach(id=>document.getElementById(id).value="");
-    loadStocks(); loadOverview();
+    clearCache("/api/stocks"); clearCache("/api/investments");
+    loadStocks(); loadOverview(); loadActiveLots();
   }
 }
 
@@ -939,6 +955,7 @@ async function recordSale() {
     document.getElementById("sale-preview").textContent = "";
     document.getElementById("lot-detail").style.display = "none";
     document.getElementById("sale-lot-id").value = "";
+    clearCache("/api/stocks"); clearCache("/api/investments"); clearCache("/api/savings");
     loadStocks(); loadOverview(); loadActiveLots();
   }
 }
@@ -946,7 +963,7 @@ async function recordSale() {
 async function deleteSale(id) {
   if (!confirm("Remove this sale? Shares will be restored to the lot.")) return;
   const d = await api("DELETE",`/api/stocks/sale/${id}`);
-  if (d.ok) { toast("Sale removed — shares restored to lot."); loadStocks(); loadOverview(); loadActiveLots(); }
+  if (d.ok) { clearCache("/api/stocks"); clearCache("/api/investments"); toast("Sale removed — shares restored to lot."); loadStocks(); loadOverview(); loadActiveLots(); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1492,9 +1509,9 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
         <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.4rem">
           <div style="font-size:.7rem;color:var(--text3);width:110px;flex-shrink:0;text-transform:capitalize">${dim.replace(/_/g," ")}</div>
           <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
-            <div style="height:100%;width:${(score/25)*100}%;background:${score>=20?"var(--green)":score>=13?"var(--gold)":"var(--red)"};border-radius:3px"></div>
+            <div style="height:100%;width:${isNaN(score)?0:(score/25)*100}%;background:${score>=20?"var(--green)":score>=13?"var(--gold)":"var(--red)"};border-radius:3px"></div>
           </div>
-          <div style="font-family:var(--font-mono);font-size:.7rem;color:var(--text3);width:36px;text-align:right">${score}/25</div>
+          <div style="font-family:var(--font-mono);font-size:.7rem;color:var(--text3);width:36px;text-align:right">${isNaN(score)?'—':score+'/25'}</div>
         </div>`).join("")}
     </div>` : ""}
 
@@ -1536,7 +1553,7 @@ function _renderAgenticReviewInner(agents, summary, wrap) {
         <thead><tr><th>Class</th><th class="num-col">Alloc %</th><th>Status</th><th class="hide-sm">Comment</th></tr></thead>
         <tbody>${health.asset_class_health.map(ac=>`<tr>
           <td class="mo">${ac.class||""}</td>
-          <td class="num-col mo" style="font-family:var(--font-mono)">${ac.allocation_pct||0}%</td>
+          <td class="num-col mo" style="font-family:var(--font-mono)">${isNaN(ac.allocation_pct)?'—':(ac.allocation_pct||0)+'%'}</td>
           <td><span class="${ac.health==="STRONG"||ac.health==="GOOD"?"badge-ok":ac.health==="NEUTRAL"?"badge-info":"badge-err"}">${ac.health||"—"}</span></td>
           <td class="hide-sm" style="font-size:.72rem;color:var(--text2)">${ac.comment||""}</td>
         </tr>`).join("")}</tbody>
@@ -2455,7 +2472,7 @@ async function recordExchange() {
   // Show each action in the toast
   toast(`✓ ${(r.actions||[]).join(" · ")}`);
 
-  clearCache("/api/savings"); clearCache("/api/stocks"); clearCache("/api/investments");
+  clearCache("/api/savings"); clearCache("/api/stocks"); clearCache("/api/investments"); clearCache("/api/savings");
   clearCache("/api/stocks/lots");
   loadAll();   // reload everything
 

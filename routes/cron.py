@@ -11,6 +11,7 @@ Endpoints:
 """
 import os
 import json
+import uuid
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from db import get_db, ph, is_pg, fx_set, fx_get_all, upsert_snapshot_sql
@@ -407,6 +408,9 @@ def _build_user_portfolio(user_id):
 
     holdings = []
     total_cost = total_market = 0
+    def to_kes(a, c):
+        return float(a) * fx_rates.get(c or "KES", 1.0)
+
     for k, h in tickers.items():
         h["avg_cost"] = round(h["total_cost"]/h["total_shares"],4) if h["total_shares"] else 0
         price = latest.get(k)
@@ -414,11 +418,9 @@ def _build_user_portfolio(user_id):
             mkt = h["total_shares"] * price
             h["market_price"] = price
             h["pct_return"]   = round((mkt-h["total_cost"])/h["total_cost"]*100,2) if h["total_cost"] else 0
-            def to_kes(a,c): return float(a)*fx_rates.get(c or "KES",1.0)
             total_market += to_kes(mkt, h["currency"])
         else:
             h["market_price"] = None; h["pct_return"] = None
-        def to_kes(a,c): return float(a)*fx_rates.get(c or "KES",1.0)
         total_cost += to_kes(h["total_cost"], h["currency"])
         holdings.append(h)
 

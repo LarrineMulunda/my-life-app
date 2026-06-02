@@ -353,13 +353,17 @@ function targetCard(t, current) {
 
       <!-- Probability gauge -->
       <div class="prob-gauge">
-        <div class="prob-circle" style="background:conic-gradient(${probColor} ${prob*3.6}deg, var(--bg3) 0deg)">
-          <div class="prob-inner">
-            <div class="prob-num" style="color:${probColor}">${prob}%</div>
-            <div class="prob-lbl-sm">${pl.label}</div>
-          </div>
+        <!-- SVG arc probability meter -->
+        <div style="text-align:center">
+          <svg width="84" height="48" viewBox="0 0 84 48">
+            <path d="M8 44 A34 34 0 0 1 76 44" fill="none" stroke="var(--bg3)" stroke-width="8" stroke-linecap="round"/>
+            <path d="M8 44 A34 34 0 0 1 76 44" fill="none" stroke="${probColor}" stroke-width="8" stroke-linecap="round"
+                  stroke-dasharray="${(prob/100)*107} 107"/>
+          </svg>
+          <div style="font-family:var(--font-mono);font-size:1.1rem;font-weight:600;color:${probColor};margin-top:-.5rem">${prob}%</div>
+          <div style="font-size:.65rem;color:${probColor};font-weight:500">${pl.label}</div>
+          <div style="font-size:.58rem;color:var(--text3)">hit probability</div>
         </div>
-        <div class="prob-label">Probability</div>
       </div>
     </div>
 

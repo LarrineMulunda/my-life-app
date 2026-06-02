@@ -1327,3 +1327,24 @@ input, select, button { font-family: var(--font-body); font-size: .95rem; }
   color: var(--text3);
   white-space: nowrap;
 }
+
+/* ── Goal cards mobile ───────────────────────────────────────────────────── */
+.goal-card        { background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:.8rem; }
+.goal-header      { display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:.7rem;gap:.5rem; }
+.goal-title       { font-family:var(--font-serif);font-size:1rem;color:var(--text); }
+.goal-body        { display:flex;align-items:center;gap:.9rem; }
+.goal-stats       { flex:1;display:grid;grid-template-columns:1fr 1fr;gap:.3rem .6rem; }
+.goal-stat        { display:flex;flex-direction:column; }
+.gs-val           { font-family:var(--font-mono);font-size:.82rem;color:var(--text);font-weight:500; }
+.gs-lbl           { font-size:.6rem;color:var(--text3); }
+@media(max-width:400px) {
+  .goal-body        { flex-direction:column;align-items:flex-start; }
+  .goal-stats       { grid-template-columns:1fr; }
+}
+
+/* ── Realized + Lots tab mobile ─────────────────────────────────────────── */
+@media(max-width:479px) {
+  #sales-body td,#lots-body td { font-size:.72rem; }
+  .data-table th,
+  .data-table td { padding:.4rem .35rem; }
+}
