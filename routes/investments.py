@@ -77,10 +77,13 @@ def _get_fx_rates(conn):
     return rates
 
 def _to_kes(amount, currency, rates):
-    """Convert an amount in any currency to KES using stored rates."""
+    """Convert amount to KES. Warns if rate is missing (logs to stderr)."""
     if currency == "KES" or not currency:
         return float(amount)
-    rate = rates.get(currency, 1.0)
+    rate = rates.get(currency)
+    if rate is None:
+        print(f"[WARN] _to_kes: no rate for {currency}", file=__import__("sys").stderr, flush=True)
+        return float(amount)
     return float(amount) * float(rate)
 
 
@@ -155,9 +158,16 @@ def exchange_assets():
             )
 
         elif from_type == "stocks" and from_lot_id:
-            lot = _fetchone(conn,
-                f"SELECT * FROM stock_lots WHERE id={p()} AND user_id={p()}",
-                (from_lot_id, uid()))
+            # FOR UPDATE locks the row for the duration of this transaction,
+            # preventing concurrent partial sales from overselling the lot.
+            if is_pg():
+                lot = _fetchone(conn,
+                    f"SELECT * FROM stock_lots WHERE id={p()} AND user_id={p()} FOR UPDATE",
+                    (from_lot_id, uid()))
+            else:
+                lot = _fetchone(conn,
+                    f"SELECT * FROM stock_lots WHERE id={p()} AND user_id={p()}",
+                    (from_lot_id, uid()))
             if not lot:
                 conn.rollback()
                 return jsonify({"error": "Lot not found"}), 404
@@ -286,8 +296,25 @@ def investments_all():
             "savings_net":    round(savings_net, 2),
             "has_foreign":    any(h.get("currency","KES") != "KES" for h in port["holdings"]),
             "asset_summary":  {
-                cls: {"value": v, "cost": v, "currency": "KES", "type": "savings"}
-                for cls, v in sav_by_class.items()
+                # Stocks grouped by exchange
+                **{
+                    f"Stocks ({h['exchange']})": {
+                        "value":    round((h.get("market_value_kes") or h.get("total_cost_kes") or 0), 2),
+                        "cost":     round(h.get("total_cost_kes") or 0, 2),
+                        "gain":     round((h.get("gain_loss_kes") or 0), 2),
+                        "gain_pct": round((h.get("pct_return") or 0), 2),
+                        "currency": "KES",
+                        "type":     "stocks",
+                        "exchange": h["exchange"],
+                    }
+                    for h in port["holdings"]
+                },
+                # Other assets grouped by class
+                **{
+                    cls: {"value": v, "cost": v, "gain": 0,
+                          "gain_pct": 0, "currency": "KES", "type": "savings"}
+                    for cls, v in sav_by_class.items()
+                },
             },
         },
         "savings":    sav_rows,
@@ -451,59 +478,42 @@ def _build_portfolio(conn):
         lot["lot_cost_kes"]      = round(_to_kes(lot_cost, cur, fx_rates), 2)
         lot["fx_rate_kes"]       = fx_rates.get(cur, 1.0)
         all_lots.append(lot)
-    # Prices from GLOBAL table — only for tickers this user holds
+    # ONE query fetches all price history — split into latest + sparklines in Python
     user_tickers = list({(l["ticker"], l.get("exchange","NSE")) for l in lots})
     if user_tickers and is_pg():
         ticker_pairs = ",".join(f"('{t}','{e}')" for t,e in user_tickers)
-        prices = _fetchall(conn, f"""
-            SELECT DISTINCT ON (ticker, exchange) ticker, exchange, price, currency, date
+        all_prices = _fetchall(conn, f"""
+            SELECT ticker, exchange, price, currency, date
             FROM global_prices
             WHERE (ticker, exchange) IN ({ticker_pairs})
-            ORDER BY ticker, exchange, date DESC
+            ORDER BY ticker, exchange, date ASC
         """)
     elif user_tickers:
         in_clause = ",".join(f"'{t}|{e}'" for t,e in user_tickers)
-        prices = _fetchall(conn, f"""
-            SELECT ticker, exchange, price, currency, MAX(date) as date
+        all_prices = _fetchall(conn, f"""
+            SELECT ticker, exchange, price, currency, date
             FROM global_prices
             WHERE (ticker || '|' || exchange) IN ({in_clause})
-            GROUP BY ticker, exchange, price, currency
-            HAVING date = MAX(date)
+            ORDER BY ticker, exchange, date ASC
         """)
     else:
-        prices = []
-    sales    = _fetchall(conn,
+        all_prices = []
+    sales = _fetchall(conn,
         f"SELECT * FROM stock_sales WHERE user_id={ph()} ORDER BY date DESC",
         (u,))
 
-    # Build latest price and history per ticker
+    # Split one query result into latest price + history (no second DB call)
     latest_price, price_hist = {}, {}
-    for pr in prices:
+    for pr in all_prices:
         k = (pr["ticker"], pr.get("exchange", "NSE"))
-        if k not in latest_price:
-            latest_price[k] = pr
-    # Price history — fetch last 30 days only for sparklines
-    if user_tickers and is_pg():
-        ticker_pairs = ",".join(f"('{t}','{e}')" for t,e in user_tickers)
-        price_history_rows = _fetchall(conn, f"""
-            SELECT ticker, exchange, price, date FROM global_prices
-            WHERE (ticker, exchange) IN ({ticker_pairs})
-            ORDER BY ticker, exchange, date ASC
-        """)
-    elif user_tickers:
-        in_clause = ",".join(f"'{t}|{e}'" for t,e in user_tickers)
-        price_history_rows = _fetchall(conn, f"""
-            SELECT ticker, exchange, price, date FROM global_prices
-            WHERE (ticker || '|' || exchange) IN ({in_clause})
-            ORDER BY ticker, exchange, date ASC
-        """)
-    else:
-        price_history_rows = []
-
-    for pr in price_history_rows:
-        k = (pr["ticker"], pr.get("exchange", "NSE"))
+        # Last entry for this ticker = latest (rows are ASC by date)
+        latest_price[k] = pr
         price_hist.setdefault(k, []).append({
-            "date": str(pr["date"]), "price": float(pr["price"])})
+            "date": str(pr["date"]), "price": float(pr["price"])
+        })
+    price_history_rows = []  # used below — already built into price_hist
+
+    # price_hist already built above in single-pass loop
 
     # Aggregate lots per ticker
     tickers_map = {}
@@ -568,13 +578,21 @@ def _build_portfolio(conn):
             })
             total_market_kes += mkt_kes
         else:
+            # No market price available — use cost basis as fallback
+            # This prevents NaN in allocation % and keeps these in total portfolio
+            cost_kes = h["total_cost_kes"]
             h.update({
-                "market_price": None, "market_value": None,
-                "market_value_kes": None, "gain_loss": None,
-                "gain_loss_kes": None, "pct_return": None,
-                "fx_rate_kes": fx_rates.get(cur, 1.0),
-                "price_date": None,
+                "market_price":     None,
+                "market_value":     h["total_cost"],   # local currency cost
+                "market_value_kes": cost_kes,          # KES cost as proxy
+                "gain_loss":        0.0,
+                "gain_loss_kes":    0.0,
+                "pct_return":       0.0,
+                "fx_rate_kes":      fx_rates.get(cur, 1.0),
+                "price_date":       None,
+                "price_source":     "cost_basis",      # signals no real price
             })
+            total_market_kes += cost_kes              # include in portfolio total
 
         h["realized"]      = realized.get(k, {
             "realized_gain": 0, "realized_gain_kes": 0,
@@ -630,13 +648,9 @@ def get_lots_for_sale():
             WHERE shares > 0 AND user_id={p()}
             ORDER BY ticker, date
         """, (uid(),))
+        fx = _get_fx_rates(conn)   # reuse same connection
     finally:
         conn.close()
-    conn2 = get_db()
-    try:
-        fx = _get_fx_rates(conn2)
-    finally:
-        conn2.close()
     for r in rows:
         r["shares"]          = float(r["shares"])
         r["original_shares"] = float(r["original_shares"] or r["shares"])
@@ -960,18 +974,15 @@ def get_fx_rates_endpoint():
     conn = get_db()
     try:
         rates = _get_fx_rates(conn)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(updated_date) as d FROM global_fx")
+            row = cur.fetchone()
+            fx_date = (row["d"] if is_pg() else row[0]) if row else "—"
+        except Exception:
+            fx_date = "—"
     finally:
         conn.close()
-    conn2 = get_db()
-    try:
-        cur = conn2.cursor()
-        cur.execute("SELECT MAX(updated_date) as d FROM global_fx")
-        row = cur.fetchone()
-        fx_date = (row["d"] if is_pg() else row[0]) if row else "—"
-    except Exception:
-        fx_date = "—"
-    finally:
-        conn2.close()
     return jsonify({"rates": rates, "as_of": str(fx_date) if fx_date else "—"})
 
 

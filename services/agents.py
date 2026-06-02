@@ -8,6 +8,7 @@ Agent 7 (Summary) runs last.
 Job progress is written to the review_jobs DB table so the UI can poll it live.
 """
 import json
+import os
 import uuid
 import threading
 from datetime import datetime
@@ -18,8 +19,9 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
-              "gemini-2.0-flash:generateContent")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
+GEMINI_URL   = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{GEMINI_MODEL}:generateContent")
 
 AGENTS = [
     {
@@ -143,10 +145,21 @@ def _gemini(api_key, prompt, timeout=90, retries=3, use_search=True):
                 time.sleep(2 ** attempt * 3)
     raise RuntimeError(f"Gemini failed after {retries} attempts: {last_err}")
 
-def _extract_json(text):
+def _extract_json(text, expect_array=False):
+    """Extract the first valid JSON object or array from text.
+
+    expect_array=True: try [ before { (for batch endpoints that return arrays).
+    Default: try { before [ (most agents return objects).
+    If the first attempt yields the wrong type, fall back to the other.
+    """
     import re
     text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
-    for s, e in [('{', '}'), ('[', ']')]:
+
+    # Build search order based on expectation
+    pairs = [('[', ']'), ('{', '}')] if expect_array else [('{', '}'), ('[', ']')]
+
+    results = {}
+    for s, e in pairs:
         start = text.find(s)
         if start == -1:
             continue
@@ -156,8 +169,20 @@ def _extract_json(text):
             elif ch == e:
                 depth -= 1
                 if depth == 0:
-                    return json.loads(text[start:i + 1])
-    raise ValueError(f"No JSON in response: {text[:300]}")
+                    try:
+                        results[s] = json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
+    # Return the preferred type if present, else fallback
+    preferred_key = '[' if expect_array else '{'
+    fallback_key  = '{' if expect_array else '['
+    if preferred_key in results:
+        return results[preferred_key]
+    if fallback_key in results:
+        return results[fallback_key]
+    raise ValueError(f"No valid JSON in response: {text[:300]}")
 
 
 # ── Portfolio context builder ─────────────────────────────────────────────────
@@ -561,7 +586,8 @@ def _prompt_health(ctx, portfolio, savings=None):
 
     # ── Compute real metrics from actual portfolio data ───────────────────
     holdings = portfolio.get("holdings", [])
-    total_stock_kes = portfolio.get("total_market", 0) or 0
+    # total_market now includes cost-basis fallback for unpriced holdings
+    total_stock_kes = portfolio.get("total_market", 0) or portfolio.get("total_cost", 0) or 0
     total_sav_kes   = sum(sav_totals.values())
     total_all_kes   = total_stock_kes + total_sav_kes
 
@@ -820,6 +846,10 @@ def _prompt_analyst_batch(tickers_batch):
 
 # ── Specialist sub-verifier prompts (one per agent domain) ──────────────────
 
+# Which sub-verifiers benefit from Google Search (fact-heavy agents only)
+# Logic-only agents (performance, rebalancing, health) run without search — fast, no hang risk
+_VERIFIER_NEEDS_SEARCH = {"analyst", "thematic", "corporate", "dividend"}
+
 _SUB_VERIFIER_SPECS = {
     "performance": {
         "role":   "a quantitative portfolio performance analyst and auditor",
@@ -904,15 +934,19 @@ def _prompt_sub_verifier(agent_id, agent_result, note=""):
         "You are " + spec["role"] + ". Today is " + today + ".",
         pass_note,
         "Verify the output from the " + agent_id.upper() + " agent below.",
-        "Use Google Search to fact-check specific claims.",
+        ("Use Google Search to verify the specific facts listed in the criteria below."
+         if agent_id in _VERIFIER_NEEDS_SEARCH
+         else "Check internal consistency and logical plausibility — no web search needed."),
         "",
         "VERIFICATION CRITERIA:",
         spec["checks"],
         "",
         "CONFIDENCE RULES:",
-        "- HIGH: confirmed from external source",
-        "- MEDIUM: plausible, unconfirmed but no contradicting evidence",
-        "- LOW: unverifiable, suspicious, or contradicted",
+        ("- HIGH: key facts confirmed from at least one external source"
+         if agent_id in _VERIFIER_NEEDS_SEARCH
+         else "- HIGH: internally consistent, numbers check out, no red flags"),
+        "- MEDIUM: plausible, no contradicting evidence found",
+        "- LOW: suspicious values, internal contradictions, or claims refuted by search",
         "",
         "AGENT OUTPUT:",
         data_str,
@@ -1214,20 +1248,24 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
     _save_job(job_id, user_id, state)
 
     def run_agent(agent_id, prompt_fn=None, *args, **kwargs):
-        state[agent_id]["status"]  = "running"
-        state[agent_id]["started"] = datetime.utcnow().isoformat()
+        with state_lock:
+            state[agent_id]["status"]  = "running"
+            state[agent_id]["started"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
         try:
             actual_fn = kwargs.pop("prompt_fn", prompt_fn)
             prompt    = actual_fn(*args, **kwargs)
             text      = _gemini(api_key, prompt, timeout=90)
             result    = _extract_json(text)
-            state[agent_id]["status"] = "done"
-            state[agent_id]["result"] = result
+            with state_lock:
+                state[agent_id]["status"] = "done"
+                state[agent_id]["result"] = result
         except Exception as e:
-            state[agent_id]["status"] = "error"
-            state[agent_id]["error"]  = str(e)
-        state[agent_id]["finished"] = datetime.utcnow().isoformat()
+            with state_lock:
+                state[agent_id]["status"] = "error"
+                state[agent_id]["error"]  = str(e)
+        with state_lock:
+            state[agent_id]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
         # Fire verifier immediately — overlaps with other agents still running
         if agent_id in agent_verified_events:
@@ -1253,8 +1291,9 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
             _save_job(job_id, user_id, state)
             return
 
-        state["dividend"]["status"]  = "running"
-        state["dividend"]["started"] = datetime.utcnow().isoformat()
+        with state_lock:
+            state["dividend"]["status"]  = "running"
+            state["dividend"]["started"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
 
         # Split into batches
@@ -1316,14 +1355,15 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                 f"Analysed {len(active)} tickers in {len(batches)} batch(es). "
                 f"Projected annual income: KES {merged_summary['projected_annual_kes']:,.0f}.")
 
-        state["dividend"]["status"]  = "done"
-        state["dividend"]["result"]  = {
-            "ytd_received":          all_ytd,
-            "expected_remaining":    all_expected,
-            "non_dividend_holdings": list(set(all_non_div)),
-            "summary":               merged_summary,
-        }
-        state["dividend"]["finished"] = datetime.utcnow().isoformat()
+        with state_lock:
+            state["dividend"]["status"]  = "done"
+            state["dividend"]["result"]  = {
+                "ytd_received":          all_ytd,
+                "expected_remaining":    all_expected,
+                "non_dividend_holdings": list(set(all_non_div)),
+                "summary":               merged_summary,
+            }
+            state["dividend"]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
         _verify_and_revise("dividend")
 
@@ -1374,7 +1414,8 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
 
         for h in holdings:
             ticker  = h["ticker"].upper()
-            mkt_val = h.get("market_value_kes") or h.get("total_cost_kes") or 0
+            mkt_val = (h.get("market_value_kes") or h.get("total_cost_kes") or 0)
+            if mkt_val != mkt_val: mkt_val = 0  # guard NaN
             themes  = THEME_MAP.get(ticker, [])
             if themes:
                 for theme in themes:
@@ -1445,12 +1486,15 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                     if exp_theme.lower() in theme_key.lower() or theme_key.lower() in exp_theme.lower():
                         r["current_pct"] = max(r.get("current_pct",0), pct)
                         break
-            state["thematic"]["status"] = "done"
-            state["thematic"]["result"] = result
+            with state_lock:
+                state["thematic"]["status"] = "done"
+                state["thematic"]["result"] = result
         except Exception as e:
-            state["thematic"]["status"] = "error"
-            state["thematic"]["error"]  = str(e)
-        state["thematic"]["finished"] = datetime.utcnow().isoformat()
+            with state_lock:
+                state["thematic"]["status"] = "error"
+                state["thematic"]["error"]  = str(e)
+        with state_lock:
+            state["thematic"]["finished"] = datetime.utcnow().isoformat()
         _save_job(job_id, user_id, state)
         _verify_and_revise("thematic")
 
@@ -1497,7 +1541,7 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                     prompt  = _prompt_analyst_batch(batch)
                     text    = _gemini(api_key, prompt, timeout=90)
                     # Response is a JSON array
-                    raw     = _extract_json(text)
+                    raw     = _extract_json(text, expect_array=True)
                     results = raw if isinstance(raw, list) else raw.get("results", [raw])
                     for r in results:
                         if isinstance(r, dict) and not r.get("skip") and r.get("key_thesis"):
@@ -1577,7 +1621,8 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
 
     # ── Per-agent verified events (set when agent + verifier + revision done) ─
     agent_verified_events = {aid: threading.Event() for aid in ALL_REVISIONABLE}
-    agent_ver_lock        = threading.Lock()   # guard state["verifier"] writes
+    agent_ver_lock        = threading.Lock()   # guard sub_verifier_results writes
+    state_lock            = threading.Lock()   # guard all state[aid] writes
     sub_verifier_results  = {}                 # aid → sub-verifier result
 
     PROMPT_MAP = {
@@ -1595,8 +1640,8 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         "analyst":     lambda: (tickers_str,),
         "thematic":    lambda: (ctx,),
         "corporate":   lambda: (tickers_str,),
-        "dividend":    lambda: (ctx, portfolio),
-        "health":      lambda: (ctx, portfolio),
+        "dividend":    lambda: (ctx, portfolio, savings),
+        "health":      lambda: (ctx, portfolio, savings),  # savings required for asset health
     }
 
     def _revise_agent(agent_id, feedback, items):
@@ -1620,15 +1665,21 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         state[agent_id]["status"] = "revising"
         _save_job(job_id, user_id, state)
         try:
-            text   = _gemini(api_key, revision_txt, timeout=60, retries=1)
+            # Match the agent's search setting — fact agents need search on revision too
+            use_srch = aid in _VERIFIER_NEEDS_SEARCH
+            text   = _gemini(api_key, revision_txt, timeout=90 if use_srch else 60,
+                             retries=1, use_search=use_srch)
             result = _extract_json(text)
-            state[agent_id]["status"]  = "done"
-            state[agent_id]["result"]  = result
-            state[agent_id]["revised"] = True
-            agent_results[agent_id]    = result
+            with state_lock:
+                state[agent_id]["status"]  = "done"
+                state[agent_id]["result"]  = result
+                state[agent_id]["revised"] = True
+            # Do NOT write to agent_results here — it's rebuilt after all
+            # agents complete. Writing here would cause races on the shared dict.
         except Exception as e:
-            state[agent_id]["status"]         = "done"
-            state[agent_id]["revision_error"] = str(e)
+            with state_lock:
+                state[agent_id]["status"]         = "done"
+                state[agent_id]["revision_error"] = str(e)
         _save_job(job_id, user_id, state)
 
     # ── _verify_and_revise: runs immediately when each agent completes ────────
@@ -1650,15 +1701,18 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
 
             # Build slim prompt (no search — fast logical check only)
             v_prompt = _prompt_sub_verifier(aid, result)
-            v_text   = _gemini(api_key, v_prompt, timeout=45, retries=1,
-                               use_search=False)
+            needs_search = aid in _VERIFIER_NEEDS_SEARCH
+            v_text   = _gemini(api_key, v_prompt, timeout=90 if needs_search else 45,
+                               retries=1, use_search=needs_search)
             v_result = _extract_json(v_text)
 
             with agent_ver_lock:
                 sub_verifier_results[aid] = v_result
+            # Do NOT call _save_job here — pipeline polls state, not verifier detail
+            # Saves from agent completion + final coherence check are sufficient
 
-            # Revise until HIGH confidence or max 3 attempts
-            MAX_REVISIONS = 3
+            # Revise until HIGH confidence or max 2 attempts
+            MAX_REVISIONS = 2
             attempt = 0
             current_result = v_result
 
@@ -1686,18 +1740,20 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
                     revised_result = state[aid].get("result", {})
                     rv_prompt = _prompt_sub_verifier(
                         aid, revised_result,
-                        note=f"RE-VERIFICATION attempt {attempt}/{MAX_REVISIONS}. "
+                        note="RE-VERIFICATION attempt " + str(attempt) + "/" + str(MAX_REVISIONS) + ". "
                              f"Agent was revised based on previous feedback. "
                              f"Only flag if still not HIGH confidence."
                     )
-                    rv_text   = _gemini(api_key, rv_prompt, timeout=45,
-                                        retries=1, use_search=False)
+                    rv_text   = _gemini(api_key, rv_prompt,
+                                        timeout=90 if aid in _VERIFIER_NEEDS_SEARCH else 45,
+                                        retries=1,
+                                        use_search=aid in _VERIFIER_NEEDS_SEARCH)
                     current_result = _extract_json(rv_text)
 
                     with agent_ver_lock:
                         sub_verifier_results[aid] = current_result
                 except Exception:
-                    break  # Re-verify failed — keep last revision and move on
+                    break
 
             state[aid]["revision_attempts"] = attempt
             if attempt > 0:
@@ -1724,7 +1780,9 @@ def run_pipeline(job_id, user_id, api_key, portfolio, savings):
         threading.Thread(target=run_agent,                 args=("health",      _prompt_health,      ctx, portfolio, savings)),
     ]
     for t in threads: t.daemon = True; t.start()
-    for t in threads: t.join(timeout=150)
+    # 300s: covers slowest agent (analyst ~4min) + per-agent verifier (90s max)
+    # The verifier runs INSIDE the agent thread after the agent finishes.
+    for t in threads: t.join(timeout=300)
 
     # ── Agent 6: Verifier (waits for 1-5) ────────────────────────────────────
     agent_results = {

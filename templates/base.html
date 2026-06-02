@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>{% block title %}My Life{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/static/css/style.css"/>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
   <!-- Prefetch other pages so they're ready before click -->
   <link rel="prefetch" href="/investments"/>
   <link rel="prefetch" href="/subscriptions"/>
@@ -71,9 +72,19 @@
       const data = await res.json();
 
       // Swap main content
-      const main = document.querySelector('main') || document.querySelector('.page-header')?.parentElement;
+      // Inject into the page-content wrapper (the div holding page-header + panels)
+      const main = (
+        document.querySelector('.tab-container') ||
+        document.querySelector('.page-content') ||
+        document.querySelector('.page-header')?.parentElement ||
+        document.querySelector('[data-spa-root]')
+      );
       if (main && data.content) {
         main.innerHTML = data.content;
+      } else if (!main) {
+        // Fallback: full reload if we can't find the content area
+        window.location.href = href;
+        return;
       }
       showBar(90);
 
@@ -85,12 +96,28 @@
       // Update browser history
       history.pushState({href}, '', href);
 
-      // Re-run page init scripts
+      // Re-run page-specific init scripts (deduped by id)
       if (data.scripts) {
+        const old = document.getElementById('_spa_script');
+        if (old) old.remove();
         const s = document.createElement('script');
+        s.id = '_spa_script';
         s.textContent = data.scripts;
         document.body.appendChild(s);
       }
+      // Reload page data for the new page — clear only relevant keys
+      if (typeof clearCache === 'function') {
+        // Only clear keys that the target page actually uses
+        const INVESTMENTS_KEYS = ['/api/stocks', '/api/investments', '/api/savings', '/api/fx-rates'];
+        if (['/investments'].includes(href)) {
+          INVESTMENTS_KEYS.forEach(k => clearCache(k));
+        }
+        // All pages get a fresh load anyway via loadAll/page-specific loaders
+      }
+      if (typeof loadAll === 'function') loadAll();
+      else if (typeof loadSubscriptions === 'function' && href === '/subscriptions') loadSubscriptions();
+      else if (typeof loadGoals === 'function' && href === '/goals') loadGoals();
+      else if (typeof loadHabits === 'function' && href === '/habits') loadHabits();
 
       hideBar();
     } catch(e) {

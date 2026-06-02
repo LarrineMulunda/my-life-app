@@ -13,6 +13,13 @@ from services.tickers import seed_tickers, CURRENCIES
 
 app = Flask(__name__)
 
+# Compress JSON API responses — saves ~60-70% on large portfolio payloads
+try:
+    from flask_compress import Compress
+    Compress(app)
+except ImportError:
+    pass  # flask-compress not installed — responses uncompressed
+
 @app.after_request
 def set_cache_headers(response):
     # Cache static assets for 7 days — they only change on deploy
@@ -53,13 +60,38 @@ from flask import Blueprint
 main_bp = Blueprint("main", __name__)
 
 def _extract_page_content(full_html):
-    """Extract content+scripts from rendered page for SPA swap."""
+    """Extract content+scripts from rendered page for SPA swap.
+
+    Tries multiple patterns in order:
+    1. <div data-spa-root> ... </div>  ← preferred explicit marker
+    2. <main> ... </main>
+    3. Everything from <div class="page-header"> to end of last panel
+    """
     import re
-    mc = re.search("<main[^>]*>(.*?)</main>", full_html, re.DOTALL)
+
+    # Pattern 1: explicit SPA root marker
+    mc = re.search(r'<div[^>]+data-spa-root[^>]*>(.*?)</div>\s*{%-?\s*endblock', full_html, re.DOTALL)
+
+    # Pattern 2: <main> wrapper
     if not mc:
-        mc = re.search('(<div class="page-h[^"]*">.*?)</main>', full_html, re.DOTALL)
-    all_scripts = re.findall("<script>(.*?)</script>", full_html, re.DOTALL)
+        mc = re.search(r'<main[^>]*>(.*?)</main>', full_html, re.DOTALL)
+
+    # Pattern 3: everything from page-header div to </body>
+    if not mc:
+        start = full_html.find('<div class="page-header">')
+        if start == -1:
+            start = full_html.find('<div class="page-head">')
+        end = full_html.rfind('</body>')
+        if start != -1 and end != -1 and end > start:
+            class MC:
+                def __init__(self, s): self._s = s
+                def group(self, n): return self._s
+            mc = MC(full_html[start:end])
+
+    # Extract last <script> block (the {% block scripts %} content)
+    all_scripts = re.findall(r'<script>(.*?)</script>', full_html, re.DOTALL)
     scripts = all_scripts[-1].strip() if all_scripts else ""
+
     return {
         "content": mc.group(1) if mc else "",
         "scripts": scripts,
